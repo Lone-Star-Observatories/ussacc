@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>USSACC</string>
+<key>CFBundleIdentifier</key><string>com.lonestarobservatories.ussacc</string>
+<key>CFBundleName</key><string>USS ACC</string>
+<key>CFBundleDisplayName</key><string>USS ACC</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleShortVersionString</key><string>0.1.0</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>LSMinimumSystemVersion</key><string>14.0</string>
+<key>NSHighResolutionCapable</key><true/>
+<key>NSCalendarsFullAccessUsageDescription</key><string>USS ACC reads your schedule and identifies travel invitations for journey planning.</string>
+<key>NSAppleEventsUsageDescription</key><string>USS ACC reads Apple Mail inbox messages and applies only the filter actions you configure.</string>
+<key>NSHumanReadableCopyright</key><string>© 2026 Lone Star Observatories</string>
+</dict></plist>
