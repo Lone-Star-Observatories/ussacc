@@ -82,3 +82,12 @@ import Testing
     #expect(restored.receive(["next"]) == ["next"])
   }
 }
+
+@Test func eventNotesSplitIntoSummaryAndReminders() {
+  let event = CalendarEntry(
+    id: "e", title: "Session", start: .now, end: .now,
+    notes: "Telescope operations.\n- Charge batteries\n• Pack new filter\n")
+  #expect(event.summary == "Telescope operations.")
+  #expect(event.reminders == ["Charge batteries", "Pack new filter"])
+  #expect(CalendarEntry(id: "x", title: "", start: .now, end: .now).reminders.isEmpty)
+}

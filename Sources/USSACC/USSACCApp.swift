@@ -7,7 +7,7 @@ import SwiftUI
     WindowGroup("USS ACC · Allen Control Center") {
       ControlCenter().environmentObject(model).environmentObject(shells).preferredColorScheme(.dark)
         .task { await PreviewExporter.runIfRequested(model: model) }
-    }.defaultSize(width: 1450, height: 940)
+    }.windowStyle(.hiddenTitleBar).defaultSize(width: 1450, height: 940)
       .commands {
         CommandMenu("Stations") {
           ForEach(Array(Station.allCases.enumerated()), id: \.element) { index, station in

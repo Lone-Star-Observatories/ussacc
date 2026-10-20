@@ -12,7 +12,7 @@ enum Station: String, CaseIterable, Identifiable {
   var symbol: String {
     switch self {
     case .bridge: "sparkle"
-    case .comms: "bubble.left.and.bubble.right"
+    case .comms: "message"
     case .events: "calendar"
     case .nav: "location.fill"
     case .dev: "terminal"
@@ -104,6 +104,9 @@ enum Station: String, CaseIterable, Identifiable {
         id: "demo-morgan", name: "Morgan", address: "morgan@example.com", channel: .call,
         body: "Missed call", date: date(17, 10), isDemo: true),
       Communication(
+        id: "demo-alex", name: "Alex", address: "alex@example.com", channel: .message,
+        body: "Sounds good, see you there.", date: date(9, 18), isDemo: true),
+      Communication(
         id: "demo-delivery", name: "Delivery update", address: "delivery@example.com",
         channel: .email, subject: "Parcel delayed",
         body: "Your parcel is running late. No action is needed.", date: date(12),
@@ -113,11 +116,19 @@ enum Station: String, CaseIterable, Identifiable {
     events = [
       CalendarEntry(
         id: "demo-session", title: "Observatory session", start: date(20), end: date(22),
-        location: "Observatory · Austin", notes: "Charge batteries. Pack new filter.",
-        calendar: "Personal"),
+        location: "Observatory · Austin",
+        notes: "Telescope operations and data collection.\n- Charge batteries\n- Pack new filter",
+        calendar: "Personal", attendees: ["Jamie", "Allen"]),
       CalendarEntry(
         id: "demo-review", title: "Project review", start: date(9).addingTimeInterval(86400),
-        end: date(10).addingTimeInterval(86400), calendar: "Work"),
+        end: date(10).addingTimeInterval(86400), notes: "Status, findings, and next steps.",
+        calendar: "Work"),
+      CalendarEntry(
+        id: "demo-planning", title: "Planning", start: date(10).addingTimeInterval(2 * 86400),
+        end: date(11).addingTimeInterval(2 * 86400), calendar: "Work"),
+      CalendarEntry(
+        id: "demo-pickup", title: "Equipment pickup", start: date(14).addingTimeInterval(4 * 86400),
+        end: date(15).addingTimeInterval(4 * 86400), location: "Austin", calendar: "Personal"),
     ]
     let tomorrow = day.addingTimeInterval(86400)
     journeys = [

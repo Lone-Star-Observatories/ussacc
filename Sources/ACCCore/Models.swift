@@ -160,9 +160,11 @@ public struct CalendarEntry: Identifiable, Sendable {
   public var calendar: String
   public var timeZoneID: String
   public var allDay: Bool
+  public var attendees: [String]
   public init(
     id: String, title: String, start: Date, end: Date, location: String = "", notes: String = "",
-    calendar: String = "", timeZoneID: String = TimeZone.current.identifier, allDay: Bool = false
+    calendar: String = "", timeZoneID: String = TimeZone.current.identifier, allDay: Bool = false,
+    attendees: [String] = []
   ) {
     self.id = id
     self.title = title
@@ -173,6 +175,19 @@ public struct CalendarEntry: Identifiable, Sendable {
     self.calendar = calendar
     self.timeZoneID = timeZoneID
     self.allDay = allDay
+    self.attendees = attendees
+  }
+  /// Note lines that start with "- " or "• " are treated as checklist reminders.
+  public var reminders: [String] {
+    notes.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+      .compactMap { line in
+        ["- ", "• "].first(where: line.hasPrefix).map { String(line.dropFirst($0.count)) }
+      }
+  }
+  /// Notes without reminder lines.
+  public var summary: String {
+    notes.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+      .filter { !$0.hasPrefix("- ") && !$0.hasPrefix("• ") && !$0.isEmpty }.joined(separator: " ")
   }
 }
 public enum JourneyImport {

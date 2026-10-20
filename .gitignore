@@ -72,3 +72,5 @@ xcuserdata/
 .local-toolchain/
 
 .manifest-libs/
+
+.build-native/

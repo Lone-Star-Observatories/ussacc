@@ -19,7 +19,8 @@ import EventKit
         id: $0.eventIdentifier ?? UUID().uuidString, title: $0.title ?? "Untitled event",
         start: $0.startDate, end: $0.endDate, location: $0.location ?? "", notes: $0.notes ?? "",
         calendar: $0.calendar.title,
-        timeZoneID: $0.timeZone?.identifier ?? TimeZone.current.identifier, allDay: $0.isAllDay)
+        timeZoneID: $0.timeZone?.identifier ?? TimeZone.current.identifier, allDay: $0.isAllDay,
+        attendees: ($0.attendees ?? []).compactMap(\.name))
     }.sorted { $0.start < $1.start }
   }
 }
