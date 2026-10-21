@@ -4,6 +4,12 @@ import SwiftUI
 
 /// Developer-only rendering of this app's own view, using demo content and no account access.
 @MainActor enum PreviewExporter {
+  /// Developer checks run with demo content and must not touch saved session state.
+  static var isDevRun: Bool {
+    let arguments = ProcessInfo.processInfo.arguments
+    return ["--snapshot-dir", "--check-classifier", "--check-terminal", "--probe-imap"].contains(
+      where: arguments.contains)
+  }
   static func runIfRequested(model: AppModel) async {
     let arguments = ProcessInfo.processInfo.arguments
     if arguments.contains("--check-classifier") {
@@ -67,7 +73,7 @@ import SwiftUI
     let folder = URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
     do {
       try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-      model.loadDemo()
+      model.loadDemo(persist: false)
       guard let window = NSApplication.shared.windows.first(where: { $0.contentView != nil }) else {
         return
       }

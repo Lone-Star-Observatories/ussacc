@@ -91,3 +91,14 @@ import Testing
   #expect(event.reminders == ["Charge batteries", "Pack new filter"])
   #expect(CalendarEntry(id: "x", title: "", start: .now, end: .now).reminders.isEmpty)
 }
+
+@Test func sessionPreferencesRoundTripAndTolerateMissingKeys() throws {
+  var prefs = SessionPreferences()
+  prefs.live = true
+  prefs.calendar = true
+  let restored = try JSONDecoder().decode(
+    SessionPreferences.self, from: JSONEncoder().encode(prefs))
+  #expect(restored == prefs)
+  let partial = try JSONDecoder().decode(SessionPreferences.self, from: Data(#"{"live":true}"#.utf8))
+  #expect(partial.live && !partial.appleMail && !partial.calendar)
+}

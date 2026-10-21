@@ -53,6 +53,7 @@ enum Station: String, CaseIterable, Identifiable {
   private let mail = MailAdapter()
   private var mailTask: Task<Void, Never>?
   private var appleMailEnabled = false
+  private var prefs = SessionPreferences()
   /// Keychain reads are cached for the session to avoid repeated access prompts.
   private var passwords: [String: String] = [:]
   private var refreshBusy = false
@@ -75,9 +76,24 @@ enum Station: String, CaseIterable, Identifiable {
     accounts =
       (try? LocalPersistence.load(
         [MailAccount].self, from: folder.appendingPathComponent("accounts.json"))) ?? []
-    loadDemo()
+    prefs =
+      (try? LocalPersistence.load(
+        SessionPreferences.self, from: folder.appendingPathComponent("preferences.json")))
+      ?? SessionPreferences()
+    loadDemo(persist: false)
   }
-  func loadDemo() {
+  /// Reopens the workspace the user last used, reconnecting only sources they had connected.
+  func restoreSession() {
+    if prefs.live { useLive() }
+  }
+  private func savePrefs() {
+    try? LocalPersistence.save(prefs, to: folder.appendingPathComponent("preferences.json"))
+  }
+  func loadDemo(persist: Bool = true) {
+    if persist {
+      prefs.live = false
+      savePrefs()
+    }
     generation += 1
     mailTask?.cancel()
     mailTask = nil
@@ -169,7 +185,9 @@ enum Station: String, CaseIterable, Identifiable {
     status = "Demo workspace · fictional sample data"
     calendarStatus = "Sample calendar"
   }
-  func useLive() {
+  func useLive(restoreCalendar: Bool = true) {
+    prefs.live = true
+    savePrefs()
     generation += 1
     mailTask?.cancel()
     mailTask = nil
@@ -184,20 +202,25 @@ enum Station: String, CaseIterable, Identifiable {
         [JourneyLeg].self, from: folder.appendingPathComponent("journeys.json"))) ?? []
     status = "Live workspace · connect accounts in DEV → Settings"
     calendarStatus = "Calendar not connected"
-    appleMailEnabled = false
-    if accounts.contains(where: \.enabled) {
+    appleMailEnabled = prefs.appleMail
+    if appleMailEnabled || accounts.contains(where: \.enabled) {
       startPolling()
       Task { await refreshMail() }
     }
+    if restoreCalendar && prefs.calendar { Task { await connectCalendar() } }
   }
   func connectCalendar() async {
-    if demo { useLive() }
+    if demo { useLive(restoreCalendar: false) }
     let token = generation
     do {
       let result = try await calendar.fetch()
       guard token == generation, !demo else { return }
       events = result
       calendarStatus = "Calendar connected · \(events.count) events / 60 days"
+      if !prefs.calendar {
+        prefs.calendar = true
+        savePrefs()
+      }
       selectedEventID = events.first?.id
     } catch { calendarStatus = error.localizedDescription }
   }
@@ -248,6 +271,8 @@ enum Station: String, CaseIterable, Identifiable {
   func connectMail() async {
     if demo { useLive() }
     appleMailEnabled = true
+    prefs.appleMail = true
+    savePrefs()
     await refreshMail()
     guard !demo else { return }
     startPolling()
@@ -264,6 +289,8 @@ enum Station: String, CaseIterable, Identifiable {
   }
   func disconnectMail() {
     appleMailEnabled = false
+    prefs.appleMail = false
+    savePrefs()
     mailConnected = false
     accountStatus[IntakeLedger.appleMail] = nil
     if !accounts.contains(where: \.enabled) {

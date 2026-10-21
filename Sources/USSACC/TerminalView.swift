@@ -29,7 +29,15 @@ import SwiftUI
   @Published var selected: UUID?
   @Published var split = false
   /// Project folder used for new sessions and the file tree; nil means the home folder.
-  @Published var folder: String?
+  @Published var folder: String? = TerminalSessions.savedFolder() {
+    didSet { UserDefaults.standard.set(folder, forKey: "terminalFolder") }
+  }
+  private static func savedFolder() -> String? {
+    guard let path = UserDefaults.standard.string(forKey: "terminalFolder") else { return nil }
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+      && isDirectory.boolValue ? path : nil
+  }
   var workingDirectory: String { folder ?? FileManager.default.homeDirectoryForCurrentUser.path }
   func add(directory: String? = nil) {
     let session = ShellSession(directory: directory ?? workingDirectory)

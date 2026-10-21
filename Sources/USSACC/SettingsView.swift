@@ -97,8 +97,13 @@ struct SettingsView: View {
   }
   var actionBar: some View {
     HStack(spacing: 14) {
-      Text(testResult.isEmpty ? "Unscored items stay visible." : testResult).font(.acc(19))
-        .lineLimit(2).textSelection(.enabled)
+      if unsaved {
+        Label("Unsaved changes · Save Rules to keep them", systemImage: "exclamationmark.circle")
+          .font(.acc(19)).foregroundStyle(Color.accPeach).lineLimit(2)
+      } else {
+        Text(testResult.isEmpty ? "Unscored items stay visible." : testResult).font(.acc(19))
+          .lineLimit(2).textSelection(.enabled)
+      }
       Spacer()
       Button("Revert") {
         draft = model.policy
@@ -108,9 +113,7 @@ struct SettingsView: View {
         title: testing ? "CLASSIFYING…" : "TEST ON SAMPLE", kind: .outline, size: 22, height: 50
       ) { runTest() }.disabled(testing || sample.isEmpty).frame(width: 260)
       ACCButton(title: "SAVE RULES", primary: true, size: 22, height: 50) {
-        draft.knownAddresses = known.split(whereSeparator: \.isNewline).map {
-          String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        }.filter { !$0.isEmpty }
+        draft.knownAddresses = parsedKnown
         if let i = draft.rules.firstIndex(where: { $0.level == 5 }) {
           draft.rules[i].disposition = .keep
         }
@@ -119,6 +122,16 @@ struct SettingsView: View {
     }.padding(.horizontal, 18).padding(.vertical, 6)
       .background(Color.black, in: RoundedRectangle(cornerRadius: 12))
       .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accBorder, lineWidth: 1.2))
+  }
+  var parsedKnown: [String] {
+    known.split(whereSeparator: \.isNewline).map {
+      String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }.filter { !$0.isEmpty }
+  }
+  var unsaved: Bool {
+    var pending = draft
+    pending.knownAddresses = parsedKnown
+    return pending != model.policy
   }
   func runTest() {
     testing = true

@@ -6,7 +6,10 @@ import SwiftUI
   var body: some Scene {
     WindowGroup("USS ACC · Allen Control Center") {
       ControlCenter().environmentObject(model).environmentObject(shells).preferredColorScheme(.dark)
-        .task { await PreviewExporter.runIfRequested(model: model) }
+        .task {
+          if !PreviewExporter.isDevRun { model.restoreSession() }
+          await PreviewExporter.runIfRequested(model: model)
+        }
     }.windowStyle(.hiddenTitleBar).defaultSize(width: 1450, height: 940)
       .commands {
         CommandMenu("Stations") {

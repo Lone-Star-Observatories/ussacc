@@ -282,3 +282,18 @@ public struct IntakeLedger: Codable, Equatable, Sendable {
     return arrivals
   }
 }
+
+/// Workspace state restored on launch. Account access is only resumed for sources the user
+/// previously connected; the first connection still goes through the system permission prompts.
+public struct SessionPreferences: Codable, Equatable, Sendable {
+  public var live = false
+  public var appleMail = false
+  public var calendar = false
+  public init() {}
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    live = try c.decodeIfPresent(Bool.self, forKey: .live) ?? false
+    appleMail = try c.decodeIfPresent(Bool.self, forKey: .appleMail) ?? false
+    calendar = try c.decodeIfPresent(Bool.self, forKey: .calendar) ?? false
+  }
+}

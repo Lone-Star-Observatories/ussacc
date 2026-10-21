@@ -24,7 +24,7 @@ Open `Package.swift` in Xcode for development. Launch the packaged `.app` for Ca
 - **Nav:** Apple Maps place search, directions handoff, and editable persistent journey legs for air, taxi, train, boat, road, and walking. Calendar import detects travel candidates by word-boundary keywords and requires review of endpoints/time zones; it does not parse tickets, book travel, or verify flight status. Reviewed legs are preserved when importing again. No live routing/flight reservation service is connected.
 - **Dev:** interactive PTY terminal with multiple persistent sessions and project-folder selection, powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm). Sessions start only after New Session/Open Folder. Settings covers general mode, service connections, the spam filter, and notifications.
 
-Switch stations with **⌘1–⌘5**. Open Settings with **⌘,**. The upper-right Demo/Live control separates fictional content from your accounts. Live connections are opt-in; no account access is requested on launch.
+Switch stations with **⌘1–⌘5**. Open Settings with **⌘,**. The upper-right Demo/Live control separates fictional content from your accounts. Live connections are opt-in. On launch USS ACC reopens the last workspace and reconnects only the sources you previously connected; nothing new is requested.
 
 ## Operational Importance filter
 
@@ -56,6 +56,7 @@ Call scoring is limited to data a future call/voicemail adapter can supply. The 
 - `journeys.json`: manually added/reviewed live itinerary legs.
 - `intake.json`: seen mail IDs, per-source baselines, local quarantine IDs and classification metadata/reasons.
 - `accounts.json`: IMAP account settings (no passwords).
+- `preferences.json`: last workspace (Demo/Live) and whether Apple Mail and Calendar were connected; restored on launch.
 
 Message bodies remain in memory, not on disk. Calendar data is read on demand. Native map queries go to Apple Maps. Shell commands run locally with your user permissions. Model input includes a truncated subject/body to fit its context window; classification is best-effort, not proof that a message is spam or safe. Notifications contain sender and OP level, not the message body.
 
