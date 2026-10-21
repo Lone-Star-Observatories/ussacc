@@ -38,6 +38,10 @@ public enum BandPlan {
   /// North American-oriented allocations used for scanning and modulation hints.
   public static let bands: [Band] = [
     Band("AM broadcast", 530e3, 1.7e6, .am, raster: 10e3),
+    Band("WWV time signal", 2.495e6, 2.505e6, .am, raster: 5e3),
+    Band("WWV time signal", 4.995e6, 5.005e6, .am, raster: 5e3),
+    Band("WWV time signal", 9.995e6, 10.005e6, .am, raster: 5e3),
+    Band("WWV time signal", 14.995e6, 15.005e6, .am, raster: 5e3),
     Band("49m shortwave", 5.9e6, 6.2e6, .am, raster: 5e3),
     Band("40m amateur", 7.0e6, 7.3e6, .lsb, raster: 0),
     Band("41m shortwave", 7.3e6, 7.45e6, .am, raster: 5e3),
@@ -61,6 +65,22 @@ public enum BandPlan {
   ]
   public static func band(at frequency: Double) -> Band? {
     bands.first { frequency >= $0.low && frequency <= $0.high }
+  }
+  /// The Ham It Up's upconvert path low-pass filters its input (about 65 MHz), so with it in line
+  /// only HF is receivable; without it the bladeRF 2.0 micro tunes from 70 MHz.
+  public static let upconverterCutoff = 65e6
+  public static func scanBands(hamItUp: Bool) -> [Band] {
+    bands.filter { hamItUp ? $0.high <= upconverterCutoff : $0.low >= 70e6 }
+  }
+  /// Why a frequency can't be received in the current configuration, if it can't.
+  public static func receptionProblem(_ frequency: Double, hamItUp: Bool) -> String? {
+    if hamItUp && frequency > upconverterCutoff {
+      return "Ham It Up in upconvert mode only passes HF (below ~65 MHz). Switch it to bypass and turn HAM IT UP off for VHF/UHF."
+    }
+    if !hamItUp && frequency < 70e6 {
+      return "Below 70 MHz needs the Ham It Up in upconvert mode (turn HAM IT UP on)."
+    }
+    return nil
   }
 }
 
@@ -132,10 +152,29 @@ public enum SignalDetector {
       }
       let centreBin = moment / max(weight, 1e-12)
       var frequency = centerFrequency + (centreBin - Double(n) / 2) * binWidth
-      if abs(frequency - centerFrequency) < skipCenter { continue }
       // Receiver spurs are single tones; real emissions occupy several bins.
       if hi - lo + 1 < minimumBins { continue }
       let bandwidth = Double(hi - lo + 1) * binWidth
+      // Channelised AM/NFM bands: a wide region is several adjacent stations; split on carriers.
+      if let band = BandPlan.band(at: frequency), band.raster > 0, band.mode != .wfm,
+        band.mode != .digital, bandwidth > 2.5 * band.raster
+      {
+        let reach = max(1, Int(band.raster * 0.4 / binWidth))
+        var seen: Set<Double> = []
+        for b in lo...hi where spectrum[b] >= floor + thresholdDB {
+          guard spectrum[max(lo, b - reach)...min(hi, b + reach)].max() == spectrum[b] else { continue }
+          let station = band.snap(centerFrequency + (Double(b) - Double(n) / 2) * binWidth)
+          guard abs(station - centerFrequency) >= skipCenter, seen.insert(station).inserted else {
+            continue
+          }
+          detections.append(
+            ChannelCandidate(
+              frequency: station, bandwidth: band.raster, power: spectrum[b],
+              snr: spectrum[b] - floor, mode: band.mode, band: band.name))
+        }
+        continue
+      }
+      if abs(frequency - centerFrequency) < skipCenter { continue }
       let features = Features(
         spectrum: spectrum, lo: lo, hi: hi, peakBin: peakBin, centre: centreBin, floor: floor)
       let band = BandPlan.band(at: frequency)

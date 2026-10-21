@@ -77,10 +77,12 @@ import SwiftUI
       worker.onScan = { _ in log.withLock { $0.scans += 1 } }
       worker.onSpectrum = { _, _ in log.withLock { $0.spectra += 1 } }
       worker.onChannels = { found in log.withLock { $0.found = ChannelList.merge($0.found, with: found) } }
+      let ham = ProcessInfo.processInfo.environment["SDR_HAM"] == "1"
       worker.update {
         $0.online = true
-        $0.frequency = 98.1e6
-        $0.mode = .wfm
+        $0.hamItUp = ham
+        $0.frequency = ham ? 1.08e6 : 98.1e6
+        $0.mode = ham ? .am : .wfm
       }
       worker.start()
       try? await Task.sleep(for: .seconds(20))
@@ -143,9 +145,11 @@ import SwiftUI
           bandwidth: env["SDR_BW"].flatMap(Double.init) ?? 1_500_000)
         let manualGain = ProcessInfo.processInfo.environment["SDR_GAIN"].flatMap { Int($0) }
         try radio.setGain(manualGain)
-        try radio.tune(mhz * 1e6 - SDRTuning.listenOffset)
+        let mode = SDRMode(rawValue: env["SDR_MODE"] ?? "WFM") ?? .wfm
+        let ham = env["SDR_HAM"] == "1"
+        try radio.tune(SDRWorker.tunerFrequency(mhz * 1e6, hamItUp: ham) - SDRTuning.listenOffset)
         _ = try radio.read(16384)
-        var demod = Demodulator(mode: .wfm, inputRate: radio.sampleRate, offset: SDRTuning.listenOffset)
+        var demod = Demodulator(mode: mode, inputRate: radio.sampleRate, offset: SDRTuning.listenOffset)
         var mixer = Mixer(frequency: SDRTuning.listenOffset, rate: radio.sampleRate)
         var decimator = ComplexDecimator(taps: FIR.lowpass(cutoff: 110e3, rate: radio.sampleRate, taps: 81), factor: 10)
         var fm = FMDemodulator()
@@ -176,8 +180,9 @@ import SwiftUI
           let b = 2048 + Int(to / hz)
           return 10 * log10(rfSpectrum[a...b].map { pow(10, $0 / 10) }.reduce(0, +))
         }
-        let station = bandPower(SDRTuning.listenOffset - 90e3, SDRTuning.listenOffset + 90e3)
-        let noise = bandPower(-SDRTuning.listenOffset - 90e3, -SDRTuning.listenOffset + 90e3)
+        let half = mode == .wfm ? 90e3 : 5e3
+        let station = bandPower(SDRTuning.listenOffset - half, SDRTuning.listenOffset + half)
+        let noise = bandPower(SDRTuning.listenOffset + 60e3 - half, SDRTuning.listenOffset + 60e3 + half)
         let peaks = rfSpectrum.indices.sorted { rfSpectrum[$0] > rfSpectrum[$1] }.prefix(5)
           .map { String(format: "%+.0fk:%.0f", (Double($0) - 2048) * hz / 1e3, rfSpectrum[$0]) }
         let sortedRF = rfSpectrum.sorted()

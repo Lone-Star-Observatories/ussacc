@@ -120,6 +120,21 @@ struct Synth {
     #expect(am.first?.mode == .am && am.first?.frequency == 121.5e6)
   }
 
+  @Test func adjacentAMStationsSplitOnCarriers() {
+    // 10 MS/s around 4.53 MHz RF (Ham It Up view): stations at 1.07, 1.08, 1.09 MHz form one region.
+    let n = 4096
+    let rate = 10e6
+    let centre = 4.53e6
+    var spectrum = [Float](repeating: -100, count: n)
+    func bin(_ f: Double) -> Int { Int(((f - centre) / rate * Double(n)).rounded()) + n / 2 }
+    for b in bin(1.064e6)...bin(1.096e6) { spectrum[b] = -88 }
+    for f in [1.07e6, 1.08e6, 1.09e6] { spectrum[bin(f)] = -70 }
+    let found = SignalDetector.detect(
+      spectrum: spectrum, centerFrequency: centre, sampleRate: rate, thresholdDB: 14, edgeFraction: 0.15)
+    #expect(found.map(\.frequency) == [1.07e6, 1.08e6, 1.09e6])
+    #expect(found.allSatisfy { $0.mode == .am && $0.band == "AM broadcast" })
+  }
+
   @Test func detectorHandlesPeaksOnRegionEdges() {
     var spectrum = [Float](repeating: -100, count: 1024)
     spectrum[600] = -70  // single-bin emission: peak is both lo and hi
@@ -144,6 +159,16 @@ struct Synth {
     let second = filter.filter([hit(149.27e6), hit(146.52e6)], centre: 148e6)
     #expect(second.map(\.frequency) == [146.52e6])
     #expect(filter.isSpur(offset: 1.27e6) && !filter.isSpur(offset: -1.48e6))
+  }
+
+  @Test func scanBandsFollowUpconverterMode() {
+    let hf = BandPlan.scanBands(hamItUp: true)
+    #expect(!hf.isEmpty && hf.allSatisfy { $0.high <= 65e6 } && hf.contains { $0.name == "AM broadcast" })
+    let direct = BandPlan.scanBands(hamItUp: false)
+    #expect(direct.allSatisfy { $0.low >= 70e6 } && direct.contains { $0.name == "FM broadcast" })
+    #expect(BandPlan.receptionProblem(98.1e6, hamItUp: true) != nil)
+    #expect(BandPlan.receptionProblem(1.075e6, hamItUp: false) != nil)
+    #expect(BandPlan.receptionProblem(1.075e6, hamItUp: true) == nil)
   }
 
   @Test func channelListMergesRepeatsAndKeepsStrongest() {

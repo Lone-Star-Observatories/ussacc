@@ -172,7 +172,24 @@ enum SDRTuning {
 @MainActor final class SDRController: ObservableObject {
 
   @Published var online: Bool { didSet { save(); worker.update { $0.online = online } } }
-  @Published var hamItUp: Bool { didSet { save(); worker.update { $0.hamItUp = hamItUp } } }
+  @Published var hamItUp: Bool {
+    didSet {
+      save()
+      worker.update { $0.hamItUp = hamItUp }
+      // Land somewhere receivable for the new path: the strongest known channel it can pass,
+      // else WWV 10 MHz through the upconverter or FM without it.
+      if BandPlan.receptionProblem(frequency, hamItUp: hamItUp) != nil {
+        if let best = channels.filter({
+          $0.mode.listenable && BandPlan.receptionProblem($0.frequency, hamItUp: hamItUp) == nil
+        }).max(by: { $0.snr < $1.snr }) {
+          tune(to: best)
+        } else {
+          frequency = hamItUp ? 10e6 : 98.1e6
+          mode = hamItUp ? .am : .wfm
+        }
+      }
+    }
+  }
   @Published var frequency: Double { didSet { save(); worker.update { $0.frequency = frequency } } }
   @Published var mode: SDRMode { didSet { save(); worker.update { $0.mode = mode } } }
   @Published var gain: Int? { didSet { worker.update { $0.gain = gain } } }
@@ -374,14 +391,18 @@ final class SDRWorker: @unchecked Sendable {
     }
     var active = snapshot
     func retune(_ config: Config) throws -> Demodulator {
+      if let problem = BandPlan.receptionProblem(config.frequency, hamItUp: config.hamItUp) {
+        onStatus(problem)
+      }
       let tuner = Self.tunerFrequency(config.frequency, hamItUp: config.hamItUp) - SDRTuning.listenOffset
       guard tuner >= BladeRFDevice.minimumFrequency else {
-        throw IntegrationError.message(
-          "Below 70 MHz needs the Ham It Up upconverter (turn on HAM IT UP).")
+        throw IntegrationError.message("Below 70 MHz needs the Ham It Up upconverter (turn on HAM IT UP).")
       }
       try radio.tune(tuner)
       try radio.setGain(config.gain)
-      onStatus("Listening \(String(format: "%.4f", config.frequency / 1e6)) MHz \(config.mode.rawValue)")
+      if BandPlan.receptionProblem(config.frequency, hamItUp: config.hamItUp) == nil {
+        onStatus("Listening \(String(format: "%.4f", config.frequency / 1e6)) MHz \(config.mode.rawValue)")
+      }
       return Demodulator(mode: config.mode, inputRate: radio.sampleRate, offset: SDRTuning.listenOffset)
     }
     var demod = try retune(active)
@@ -418,14 +439,14 @@ final class SDRWorker: @unchecked Sendable {
     }
     try radio.setGain(nil)
     let span = radio.sampleRate
-    let usable = span * 0.8
+    // Detection ignores the outer 15% each side, so each tuning covers ±35% of the span.
+    let usableHalf = span * 0.35
     let analyzer = SpectrumAnalyzer(size: 4096)
     let hamItUp = snapshot.hamItUp
-    let bands = BandPlan.bands.filter {
-      hamItUp || $0.low >= BladeRFDevice.minimumFrequency + span / 2
-    }
+    let bands = BandPlan.scanBands(hamItUp: hamItUp)
     for band in bands {
-      var centre = band.low + min(usable, band.high - band.low) / 2
+      // Starting a full half-span above the band edge keeps narrow bands clear of the DC notch.
+      var centre = band.low + usableHalf
       repeat {
         let current = snapshot
         if !current.online || current.listen || current.hamItUp != hamItUp { return }
@@ -445,8 +466,8 @@ final class SDRWorker: @unchecked Sendable {
         ).filter { $0.frequency >= band.low && $0.frequency <= band.high }
         let confirmed = spurs.filter(found, centre: centre)
         if !confirmed.isEmpty { onChannels(confirmed) }
-        centre += usable
-      } while centre - usable / 2 < band.high
+        centre += 2 * usableHalf
+      } while centre - usableHalf < band.high
     }
     spurs.nextSweep()
   }
