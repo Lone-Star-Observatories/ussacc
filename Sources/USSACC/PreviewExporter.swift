@@ -16,6 +16,10 @@ import SwiftUI
       print(Intelligence.availability)
       for (body, known) in [
         ("Can you confirm our meeting tonight, Allen?", true),
+        ("Action required by Friday: your venue contract for the Oct 30 event must be signed or the booking is released.", false),
+        ("Receipt for your order #4821: telescope eyepiece, $89.00. Thanks for shopping.", false),
+        ("This week's newsletter: 10 stargazing tips and our autumn sale.", false),
+        ("CONGRATULATIONS!!! You have been selected for a free cruise. Click here.", false),
         ("Your parcel is delayed. No action needed.", false),
       ] {
         let item = Communication(

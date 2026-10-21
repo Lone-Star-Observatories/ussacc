@@ -30,13 +30,15 @@ Switch stations with **⌘1–⌘5**. Open Settings with **⌘,**. The upper-rig
 
 The central COMMS filter uses Apple's on-device [Foundation Models](https://developer.apple.com/documentation/foundationmodels/systemlanguagemodel) framework and guided generation. No cloud fallback is configured.
 
-| Level | Meaning |
+| Level | Default meaning (editable) |
 | --- | --- |
-| OP5 | Known person speaking directly to you / asking you a direct question. Always kept. |
-| OP4 | Reserved; definition not configured. |
-| OP3 | Reserved; definition not configured. |
-| OP2 | Other content, unless a lower-level rule applies. |
-| OP1 | Routine/informational notices, including late or needs-attention updates. |
+| OP5 | Direct question or email of personal nature. Requires a known sender; always kept. |
+| OP4 | Unique notice or invitation from business that has urgency |
+| OP3 | General unique but regular items, like receipts |
+| OP2 | Eblasts, newsletters, regular emails |
+| OP1 | Unactionable garbage |
+
+Edit each meaning in the Spam Filter table and Save Rules; the classifier is instructed with your definitions. A blank meaning disables that level.
 
 Under **Dev → Settings → Spam Filter**, enter exact known sender addresses, enable incoming classification, and save per-level actions. Each level has a disposition (Keep / local Quarantine / Apple Mail Trash) and independent Highlight / Push controls. Rules initially keep everything; automatic deletion is off. Unscored, invalid, or unavailable-model results are kept visible. Automatic OP5 requires an exact configured sender address, not the display name; this is contact matching, not cryptographic sender authentication.
 

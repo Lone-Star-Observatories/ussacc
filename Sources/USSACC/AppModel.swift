@@ -431,7 +431,8 @@ enum Station: String, CaseIterable, Identifiable {
     let context = token ?? generation
     let savedPolicy = policy
     let result = await Intelligence.classify(
-      item, known: policy.isKnown(item.address) || (item.isDemo && item.name == "Jamie"))
+      item, known: policy.isKnown(item.address) || (item.isDemo && item.name == "Jamie"),
+      policy: savedPolicy)
     guard context == generation, let index = communications.firstIndex(where: { $0.id == id })
     else { return }
     if applyActions && communications[index].classification?.source == "Manual override" { return }

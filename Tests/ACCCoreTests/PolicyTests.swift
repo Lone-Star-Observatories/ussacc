@@ -23,10 +23,29 @@ import Testing
         == PolicyDecision(disposition: .keep, highlight: false, notify: false))
     #expect(PolicyDecision.evaluate(item(level: 1), policy: policy).disposition == .delete)
   }
-  @Test func unknownSenderCannotReceiveOP5AndReservedScoresStayUnscored() {
+  @Test func unknownSenderCannotReceiveOP5AndUndefinedLevelsStayUnscored() {
     #expect(Classification.validated(level: 5, reason: "Question", isKnown: false).level == nil)
-    #expect(Classification.validated(level: 4, reason: "Important", isKnown: true).level == nil)
     #expect(Classification.validated(level: 5, reason: "Direct question", isKnown: true).level == 5)
+    #expect(Classification.validated(level: 4, reason: "Urgent invite", isKnown: false).level == 4)
+    var policy = FilterPolicy()
+    policy.rules[3].meaning = "  "  // OP4 cleared
+    #expect(policy.definedLevels == [1, 2, 3, 5])
+    #expect(
+      Classification.validated(
+        level: 4, reason: "Urgent", isKnown: true, allowed: policy.definedLevels
+      ).level == nil)
+    #expect(Classification.validated(level: 9, reason: "x", isKnown: true).level == nil)
+  }
+  @Test func meaningsDefaultAndOlderPoliciesGainDefaults() throws {
+    let policy = FilterPolicy()
+    #expect(policy.meaning(for: 5) == "Direct question or email of personal nature")
+    #expect(policy.meaning(for: 1) == "Unactionable garbage")
+    let legacy = Data(
+      #"{"enabled":true,"knownAddresses":[],"rules":[{"level":2,"disposition":"Quarantine","highlight":false,"push":false}]}"#
+        .utf8)
+    let restored = try JSONDecoder().decode(FilterPolicy.self, from: legacy)
+    #expect(restored.rules[0].meaning == "Eblasts, newsletters, regular emails")
+    #expect(restored.rules[0].disposition == .quarantine)
   }
   @Test func knownIdentityUsesExactAddressNotDisplayNameOrSubstring() {
     var policy = FilterPolicy()

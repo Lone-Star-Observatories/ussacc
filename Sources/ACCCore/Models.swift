@@ -8,16 +8,38 @@ public enum Disposition: String, Codable, CaseIterable, Sendable {
 }
 public struct LevelRule: Codable, Equatable, Sendable {
   public var level: Int
+  /// Allen's definition of this level. It is given to the classifier; blank means unused.
+  public var meaning: String
   public var disposition: Disposition
   public var highlight: Bool
   public var push: Bool
   public init(
-    level: Int, disposition: Disposition = .keep, highlight: Bool = false, push: Bool = false
+    level: Int, meaning: String? = nil, disposition: Disposition = .keep, highlight: Bool = false,
+    push: Bool = false
   ) {
     self.level = level
+    self.meaning = meaning ?? Self.defaultMeaning(level)
     self.disposition = disposition
     self.highlight = highlight
     self.push = push
+  }
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    level = try c.decode(Int.self, forKey: .level)
+    meaning = try c.decodeIfPresent(String.self, forKey: .meaning) ?? Self.defaultMeaning(level)
+    disposition = try c.decodeIfPresent(Disposition.self, forKey: .disposition) ?? .keep
+    highlight = try c.decodeIfPresent(Bool.self, forKey: .highlight) ?? false
+    push = try c.decodeIfPresent(Bool.self, forKey: .push) ?? false
+  }
+  public static func defaultMeaning(_ level: Int) -> String {
+    switch level {
+    case 5: "Direct question or email of personal nature"
+    case 4: "Unique notice or invitation from business that has urgency"
+    case 3: "General unique but regular items, like receipts"
+    case 2: "Eblasts, newsletters, regular emails"
+    case 1: "Unactionable garbage"
+    default: ""
+    }
   }
 }
 public struct FilterPolicy: Codable, Equatable, Sendable {
@@ -31,6 +53,12 @@ public struct FilterPolicy: Codable, Equatable, Sendable {
     if level == 5 { rule.disposition = .keep }
     return rule
   }
+  public func meaning(for level: Int) -> String {
+    (rules.first { $0.level == level }?.meaning ?? LevelRule.defaultMeaning(level))
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+  /// Levels with a definition. Undefined levels are never assigned automatically.
+  public var definedLevels: Set<Int> { Set((1...5).filter { !meaning(for: $0).isEmpty }) }
   public func isKnown(_ address: String) -> Bool {
     let normalized = address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     return !normalized.isEmpty
@@ -50,8 +78,10 @@ public struct Classification: Codable, Equatable, Sendable {
     self.source = source
     self.date = date
   }
-  public static func validated(level: Int, reason: String, isKnown: Bool) -> Classification {
-    guard [1, 2, 5].contains(level), level != 5 || isKnown else {
+  public static func validated(
+    level: Int, reason: String, isKnown: Bool, allowed: Set<Int> = [1, 2, 3, 4, 5]
+  ) -> Classification {
+    guard allowed.contains(level), level != 5 || isKnown else {
       return .init(
         level: nil, reason: "The model returned an unsupported classification. Review manually.",
         source: "Apple Intelligence")

@@ -139,7 +139,10 @@ struct SettingsView: View {
       let item = Communication(
         name: "Sample", address: "sample@example.com", channel: .email, body: sample,
         isDemo: true)
-      let result = await Intelligence.classify(item, known: sampleKnown)
+      var pending = draft
+      pending.knownAddresses = parsedKnown
+      // Tests use the on-screen definitions, so edits can be tried before saving.
+      let result = await Intelligence.classify(item, known: sampleKnown, policy: pending)
       testResult = "Test · \(result.level.map { "OP\($0)" } ?? "Unscored"): \(result.reason)"
       testing = false
     }
@@ -187,20 +190,33 @@ struct SettingsView: View {
           if let index = draft.rules.firstIndex(where: { $0.level == level }) {
             HStack(spacing: 0) {
               OPBadge(level: level).frame(width: 100, alignment: .leading)
-              Text(meaning(level)).font(.acc(20)).frame(maxWidth: .infinity, alignment: .leading)
+              TextField("Not defined — level unused", text: $draft.rules[index].meaning, axis: .vertical)
+                .lineLimit(1...3).textFieldStyle(.plain).font(.acc(19)).padding(.horizontal, 10)
+                .padding(.vertical, 7).frame(minHeight: 38)
+                .background(Color.accField.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accBorder.opacity(0.5), lineWidth: 1))
+                .padding(.trailing, 14).frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityLabel("OP\(level) meaning")
               dispositionMenu(level: level, index: index).frame(width: 195, alignment: .leading)
               Toggle(isOn: $draft.rules[index].highlight) { EmptyView() }.accessibilityLabel("Highlight OP\(level)")
                 .toggleStyle(ACCCheckboxStyle()).frame(width: 120)
               Toggle(isOn: $draft.rules[index].push) { EmptyView() }.accessibilityLabel("Push OP\(level)")
                 .toggleStyle(ACCCheckboxStyle()).frame(width: 90)
-            }.padding(.horizontal, 20).frame(height: 46)
+            }.padding(.horizontal, 20).padding(.vertical, 4).frame(minHeight: 46)
           }
         }
         ACCDivider()
-        Text(
-          "OP5 is always kept. Delete is off until you configure it and moves mail to the account's Trash; Quarantine hides it in USS ACC only."
-        ).font(.acc(17)).foregroundStyle(Color.accText).frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 12).padding(.vertical, 10)
+        HStack(alignment: .top) {
+          Text(
+            "Meanings are given to the classifier; leave one blank to stop using that level. OP5 also requires a known sender and is always kept. Delete moves mail to the account's Trash; Quarantine hides it in USS ACC only."
+          ).font(.acc(17)).foregroundStyle(Color.accText)
+          Spacer(minLength: 12)
+          Button("Reset meanings") {
+            for i in draft.rules.indices {
+              draft.rules[i].meaning = LevelRule.defaultMeaning(draft.rules[i].level)
+            }
+          }.buttonStyle(.plain).font(.lcars(16)).foregroundStyle(Color.accLavender).fixedSize()
+        }.padding(.horizontal, 12).padding(.vertical, 10)
       }.background(Color.black, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accBorder, lineWidth: 1.2))
       Text("CLASSIFIER EXAMPLES").font(.lcars(24)).foregroundStyle(Color.accLavender)
@@ -233,7 +249,7 @@ struct SettingsView: View {
             .scrollContentBackground(.hidden).padding(8).frame(height: 96)
             .background(Color.accField, in: RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accBorder, lineWidth: 1.2))
-          Text("One exact address per line. Required for automatic OP5. OP3–4 remain undefined.")
+          Text("One exact address per line. Required for automatic OP5.")
             .font(.acc(16)).foregroundStyle(Color.accDim)
         }
         VStack(alignment: .leading, spacing: 8) {
@@ -399,14 +415,7 @@ struct SettingsView: View {
       ).font(.acc(16)).foregroundStyle(Color.accDim)
     }
   }
-  func meaning(_ level: Int) -> String {
-    switch level {
-    case 5: "Known person · direct question"
-    case 4, 3: "Not defined"
-    case 2: "Other low-priority content"
-    default: "Routine notices · late or needs attention"
-    }
-  }
+
 }
 
 struct ACCCheckboxStyle: ToggleStyle {
