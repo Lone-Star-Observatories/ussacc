@@ -36,6 +36,8 @@ The strip at the bottom of PSYART drives a bladeRF via libbladeRF (`brew install
 
 Audio plays only while PSYART is on screen and AUDIO is on. Otherwise, while SDR is online, the radio sweeps the band plan at 10 MS/s (FM, airband, 2 m, marine, NOAA, 70 cm, FRS/GMRS, ISM, ADS-B; plus AM broadcast, shortwave, 40/20/10 m and CB with Ham It Up). Each emission's centre is estimated by power-weighted centroid and snapped to the band's channel raster, its bandwidth measured, and its modulation guessed from bandwidth, carrier prominence and sideband asymmetry plus the band plan. Signals that recur at the same offset from centre across tunings are rejected as receiver spurs, and a channel is listed only after a second sweep confirms it. The list is saved to `channels.json`; tap a channel to tune it.
 
+**OPTIMIZE** (and every channel tap) runs an SNR hill-climb on fresh 8192-point spectra (~290 Hz bins): it confirms a signal near the tuned frequency (or jumps to the strongest one within a channel spacing), steps the centre with a half-width probe window from coarse to 100 Hz steps, then widens or narrows the channel filter while SNR improves and at least 90% of the signal power is kept. The SNR chart above the strip plots every step by phase, then a live SNR trace; the result retunes the frequency and sets the demodulator's channel bandwidth. Listening audio pauses for the few seconds a pass takes.
+
 Developer checks: `--sdr-scan-test`, `--sdr-listen-test <MHz>` (measures the 19 kHz stereo pilot), `--sdr-worker-test`, `--psyart-test`.
 
 ## Operational Importance filter

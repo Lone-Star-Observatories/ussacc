@@ -191,7 +191,20 @@ enum SDRTuning {
     }
   }
   @Published var frequency: Double { didSet { save(); worker.update { $0.frequency = frequency } } }
-  @Published var mode: SDRMode { didSet { save(); worker.update { $0.mode = mode } } }
+  @Published var mode: SDRMode {
+    didSet {
+      save()
+      if mode != oldValue { bandwidth = nil }
+      worker.update { $0.mode = mode }
+    }
+  }
+  /// Channel filter width; nil uses the mode's default. Set by the optimizer.
+  @Published var bandwidth: Double? { didSet { worker.update { $0.bandwidth = bandwidth } } }
+  @Published private(set) var optimizerSteps: [TuneOptimizer.Step] = []
+  @Published private(set) var optimizing = false
+  @Published private(set) var optimizerSummary = ""
+  @Published private(set) var liveSNR: [Double] = []
+  var effectiveBandwidth: Double { bandwidth ?? mode.defaultBandwidth }
   @Published var gain: Int? { didSet { worker.update { $0.gain = gain } } }
   @Published var volume: Float = 0.8 { didSet { player.volume = volume } }
   /// User wants audio; it plays only while the PSYART station is on screen.
@@ -238,12 +251,50 @@ enum SDRTuning {
     worker.onChannels = { [weak self] found in
       Task { @MainActor in self?.merge(found) }
     }
+    worker.onOptimizerStep = { [weak self] step in
+      Task { @MainActor in self?.optimizerSteps.append(step) }
+    }
+    worker.onOptimizerDone = { [weak self] offset, width, gain, failure in
+      Task { @MainActor in self?.finishOptimization(offset: offset, width: width, gain: gain, failure: failure) }
+    }
+    worker.onLiveSNR = { [weak self] snr in
+      Task { @MainActor in
+        guard let self else { return }
+        self.liveSNR.append(snr)
+        if self.liveSNR.count > 150 { self.liveSNR.removeFirst(self.liveSNR.count - 150) }
+      }
+    }
+  }
+  /// Detect the signal near the tuned frequency, then hill-climb centre and bandwidth for SNR.
+  func optimize() {
+    guard online else { return }
+    optimizerSteps = []
+    optimizerSummary = "Optimizing…"
+    optimizing = true
+    worker.update { $0.optimizeRequest += 1 }
+  }
+  func dismissOptimizer() {
+    if !optimizing { optimizerSteps = [] }
+  }
+  private func finishOptimization(offset: Double, width: Double, gain: Double, failure: String?) {
+    optimizing = false
+    if let failure {
+      optimizerSummary = failure
+      return
+    }
+    let shift = (offset / 10).rounded() * 10
+    optimizerSummary = String(
+      format: "Centre %+.0f Hz · bandwidth %.1f kHz · SNR %+.1f dB", shift, width / 1e3, gain)
+    bandwidth = width
+    if shift != 0 { frequency += shift }
   }
   /// Starts the radio thread unless running developer checks.
   func start() { if available { worker.start() } else { status = "libbladeRF not installed" } }
   func tune(to channel: ChannelCandidate) {
     frequency = channel.frequency
     if channel.mode.listenable { mode = channel.mode }
+    bandwidth = nil
+    optimize()
   }
   func step(_ hz: Double) { frequency = max(100e3, frequency + hz) }
   func clearChannels() {
@@ -314,6 +365,9 @@ final class SDRWorker: @unchecked Sendable {
     var frequency = 98.1e6
     var mode: SDRMode = .wfm
     var gain: Int?
+    var bandwidth: Double?
+    /// Incremented to request an optimisation pass.
+    var optimizeRequest = 0
   }
   private var config = Config()
   private let lock = NSLock()
@@ -324,6 +378,10 @@ final class SDRWorker: @unchecked Sendable {
   var onScan: (String) -> Void = { _ in }
   var onSpectrum: ([Float], Float) -> Void = { _, _ in }
   var onChannels: ([ChannelCandidate]) -> Void = { _ in }
+  var onOptimizerStep: (TuneOptimizer.Step) -> Void = { _ in }
+  var onOptimizerDone: (Double, Double, Double, String?) -> Void = { _, _, _, _ in }
+  var onLiveSNR: (Double) -> Void = { _ in }
+  private var handledOptimize = 0
 
   init(ring: AudioRing) { self.ring = ring }
   func update(_ change: (inout Config) -> Void) {
@@ -370,7 +428,7 @@ final class SDRWorker: @unchecked Sendable {
           onStatus("bladeRF 2.0 connected")
         }
         guard let radio = device else { continue }
-        if current.listen {
+        if current.listen || current.optimizeRequest != handledOptimize {
           try listen(radio, &configuredRate)
         } else {
           try scan(radio, &configuredRate)
@@ -403,33 +461,66 @@ final class SDRWorker: @unchecked Sendable {
       if BandPlan.receptionProblem(config.frequency, hamItUp: config.hamItUp) == nil {
         onStatus("Listening \(String(format: "%.4f", config.frequency / 1e6)) MHz \(config.mode.rawValue)")
       }
-      return Demodulator(mode: config.mode, inputRate: radio.sampleRate, offset: SDRTuning.listenOffset)
+      return Demodulator(
+        mode: config.mode, inputRate: radio.sampleRate, offset: SDRTuning.listenOffset,
+        bandwidth: config.bandwidth)
     }
     var demod = try retune(active)
-    let analyzer = SpectrumAnalyzer(size: 1024)
+    let analyzer = SpectrumAnalyzer(size: 4096)
     var blocks = 0
     while true {
       let current = snapshot
-      if !current.online || !current.listen { return }
+      if !current.online || (!current.listen && current.optimizeRequest == handledOptimize) { return }
       if current.frequency != active.frequency || current.mode != active.mode
         || current.hamItUp != active.hamItUp || current.gain != active.gain
+        || current.bandwidth != active.bandwidth
       {
         active = current
         demod = try retune(active)
       }
+      if current.optimizeRequest != handledOptimize {
+        handledOptimize = current.optimizeRequest
+        try optimize(radio, config: active)
+        continue
+      }
       let (i, q) = try radio.read(16384)
-      ring.push(demod.process(i: i, q: q))
+      if current.listen { ring.push(demod.process(i: i, q: q)) }
       blocks += 1
-      if blocks % 6 == 0 {
+      if blocks % 4 == 0 {
         analyzer.reset()
-        analyzer.add(i: Array(i.prefix(4096)), q: Array(q.prefix(4096)))
+        analyzer.add(i: i, q: q)
         let spectrum = analyzer.spectrum
-        // Level near the station (offset bins either side of +250 kHz).
-        let bin = Int(SDRTuning.listenOffset / radio.sampleRate * 1024) + 512
-        let level = spectrum[max(0, bin - 3)...min(1023, bin + 3)].max() ?? -120
-        onSpectrum(Self.downsample(spectrum, to: 160), level)
+        let binHz = radio.sampleRate / 4096
+        let width = active.bandwidth ?? active.mode.defaultBandwidth
+        let measured = SNRMeter.measure(
+          spectrum: spectrum, binHz: binHz, offset: SDRTuning.listenOffset, bandwidth: width,
+          noise: SNRMeter.noiseDensity(spectrum))
+        onLiveSNR(measured.snr)
+        onSpectrum(Self.downsample(spectrum, to: 160), Float(measured.snr))
       }
     }
+  }
+
+  /// Runs a TuneOptimizer on fresh 8192-point spectra (~290 Hz bins) around the listen offset.
+  private func optimize(_ radio: BladeRFDevice, config: Config) throws {
+    let width = config.bandwidth ?? config.mode.defaultBandwidth
+    let raster = BandPlan.band(at: config.frequency)?.raster ?? 0
+    let range = max(5e3, min(150e3, max(raster, width / 2)))
+    var optimizer = TuneOptimizer(base: SDRTuning.listenOffset, bandwidth: width, searchRange: range)
+    let analyzer = SpectrumAnalyzer(size: 8192)
+    let binHz = radio.sampleRate / 8192
+    _ = try radio.read(16384)  // settle
+    while !optimizer.finished && optimizer.history.count < 120 {
+      if !snapshot.online { return }
+      analyzer.reset()
+      for _ in 0..<3 {
+        let (i, q) = try radio.read(16384)
+        analyzer.add(i: i, q: q)
+      }
+      onOptimizerStep(optimizer.step(spectrum: analyzer.spectrum, binHz: binHz))
+      Thread.sleep(forTimeInterval: 0.05)
+    }
+    onOptimizerDone(optimizer.offset, optimizer.bandwidth, optimizer.gain, optimizer.failure)
   }
 
   private func scan(_ radio: BladeRFDevice, _ configuredRate: inout Double) throws {

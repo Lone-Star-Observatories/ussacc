@@ -462,23 +462,32 @@ public struct Demodulator: Sendable {
   var ssbFilterI: RealDecimator
   var ssbFilterQ: RealDecimator
   var ssbUp: Mixer
-  /// `offset` is the station's distance from the tuned centre (offset tuning avoids the DC spike).
-  public init(mode: SDRMode, inputRate: Double, offset: Double) {
+  public let bandwidth: Double
+  /// `offset` is the station's distance from the tuned centre (offset tuning avoids the DC spike);
+  /// `bandwidth` is the channel filter width (defaults per mode).
+  public init(mode: SDRMode, inputRate: Double, offset: Double, bandwidth: Double? = nil) {
     self.mode = mode
     self.inputRate = inputRate
+    let width = bandwidth ?? mode.defaultBandwidth
+    self.bandwidth = width
     mixer = Mixer(frequency: offset, rate: inputRate)
     let stage1Factor = Int((inputRate / 240_000).rounded())
+    let stage1Cutoff = mode == .wfm ? min(110e3, max(50e3, width / 2)) : 60e3
     stage1 = ComplexDecimator(
-      taps: FIR.lowpass(cutoff: mode == .wfm ? 110e3 : 60e3, rate: inputRate, taps: 8 * stage1Factor + 1),
+      taps: FIR.lowpass(cutoff: stage1Cutoff, rate: inputRate, taps: 8 * stage1Factor + 1),
       factor: stage1Factor)
-    let narrowCutoff: Double = mode == .nfm ? 7.5e3 : mode == .am ? 5e3 : 3.2e3
+    // NFM keeps headroom for deviation; AM/SSB filters follow the channel width directly.
+    let narrowCutoff: Double =
+      mode == .nfm ? min(20e3, width * 0.6) : mode == .am ? min(20e3, width / 2) : min(6e3, width / 2 + 200)
     stage2 = ComplexDecimator(taps: FIR.lowpass(cutoff: narrowCutoff, rate: 240e3, taps: 121), factor: 5)
     audioDecimator = RealDecimator(taps: FIR.lowpass(cutoff: 15e3, rate: 240e3, taps: 81), factor: 5)
     deemphasis = Deemphasis(tau: 75e-6, rate: 240e3)
-    let shift = mode == .lsb ? -1_500.0 : 1_500.0
+    // Weaver passband 150 Hz … 150 Hz + width.
+    let halfWidth = min(width, 6e3) / 2
+    let shift = (mode == .lsb ? -1.0 : 1.0) * (150 + halfWidth)
     ssbDown = Mixer(frequency: shift, rate: Self.audioRate)
     ssbUp = Mixer(frequency: -shift, rate: Self.audioRate)
-    let ssbTaps = FIR.lowpass(cutoff: 1_400, rate: Self.audioRate, taps: 161)
+    let ssbTaps = FIR.lowpass(cutoff: halfWidth, rate: Self.audioRate, taps: 161)
     ssbFilterI = RealDecimator(taps: ssbTaps, factor: 1)
     ssbFilterQ = RealDecimator(taps: ssbTaps, factor: 1)
   }

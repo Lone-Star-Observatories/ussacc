@@ -1,5 +1,6 @@
 import ACCCore
 import AppKit
+import Charts
 import SwiftUI
 
 struct PsyartView: View {
@@ -29,6 +30,7 @@ struct PsyartView: View {
           )
         }.frame(maxHeight: .infinity)
       }
+      if sdr.optimizing || !sdr.optimizerSteps.isEmpty { SNROptimizerPanel() }
       SDRStrip()
     }
     .onAppear { sdr.stationVisible = true }
@@ -340,6 +342,16 @@ struct SDRStrip: View {
           options: SDRMode.allCases.filter(\.listenable).map { ($0.rawValue, $0) },
           selection: $sdr.mode, height: 36
         ).fixedSize()
+        Button {
+          sdr.optimize()
+        } label: {
+          VStack(spacing: 0) {
+            Label(sdr.optimizing ? "TUNING…" : "OPTIMIZE", systemImage: "scope").font(.lcars(15))
+            Text(String(format: "BW %.1f kHz", sdr.effectiveBandwidth / 1e3)).font(.acc(11))
+          }.foregroundStyle(.black).padding(.horizontal, 10).frame(height: 38)
+            .background(Color.accPeach, in: RoundedRectangle(cornerRadius: 10))
+        }.buttonStyle(.plain).disabled(!sdr.online || sdr.optimizing).fixedSize()
+          .help("Find the signal, then step centre and bandwidth to maximise SNR")
         SpectrumBars(values: sdr.spectrum).frame(width: 220, height: 40)
         VStack(alignment: .leading, spacing: 2) {
           Text(sdr.audioOn && sdr.online ? sdr.status : (sdr.scanning.isEmpty ? sdr.status : sdr.scanning))
@@ -389,5 +401,64 @@ struct SpectrumBars: View {
         context.fill(Path(rect), with: .color(value > high - 6 ? Color.accPeach : Color.accLavender))
       }
     }.background(Color.accGrid, in: RoundedRectangle(cornerRadius: 8))
+  }
+}
+
+/// Live view of the centre/bandwidth hill-climb, one point per measurement step.
+struct SNROptimizerPanel: View {
+  @EnvironmentObject private var sdr: SDRController
+  var body: some View {
+    HStack(alignment: .top, spacing: 16) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("SNR OPTIMIZER").font(.lcars(22)).foregroundStyle(Color.accPeach)
+        Text(sdr.optimizerSummary).font(.acc(15)).foregroundStyle(Color.accText).lineLimit(2)
+        if let last = sdr.optimizerSteps.last {
+          Text("Phase \(last.phase.rawValue) · step \(last.index + 1)").font(.acc(14))
+            .foregroundStyle(Color.accLavender)
+          Text(String(format: "Centre %+.0f Hz · BW %.1f kHz · %.1f dB", last.offset, last.bandwidth / 1e3, last.snr))
+            .font(.system(size: 13, design: .monospaced)).foregroundStyle(Color.accText)
+        }
+        if let live = sdr.liveSNR.last, !sdr.optimizing {
+          Text(String(format: "Live SNR %.1f dB", live)).font(.acc(14)).foregroundStyle(Color.accGreen)
+        }
+        Spacer(minLength: 0)
+        if !sdr.optimizing {
+          Button("CLOSE") { sdr.dismissOptimizer() }.buttonStyle(.plain).font(.lcars(14))
+            .foregroundStyle(Color.accLavender)
+        }
+      }.frame(width: 300, alignment: .leading)
+      Chart {
+        ForEach(sdr.optimizerSteps) { step in
+          LineMark(x: .value("Step", step.index), y: .value("SNR dB", step.snr))
+            .foregroundStyle(by: .value("Phase", step.phase.rawValue))
+            .interpolationMethod(.monotone)
+          if step.accepted {
+            PointMark(x: .value("Step", step.index), y: .value("SNR dB", step.snr))
+              .foregroundStyle(by: .value("Phase", step.phase.rawValue)).symbolSize(28)
+          }
+        }
+      }
+      .chartForegroundStyleScale([
+        "DETECT": Color.accGreen, "CENTRE": Color.accPeach, "BANDWIDTH": Color.accLavender,
+        "DONE": Color.accDim,
+      ])
+      .chartYAxisLabel("SNR dB").chartXAxisLabel("Step")
+      .chartYScale(domain: .automatic(includesZero: false))
+      .frame(maxWidth: .infinity)
+      if !sdr.liveSNR.isEmpty && !sdr.optimizing {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("LIVE").font(.lcars(14)).foregroundStyle(Color.accGreen)
+          Chart {
+            ForEach(Array(sdr.liveSNR.enumerated()), id: \.offset) { index, value in
+              AreaMark(x: .value("t", index), y: .value("SNR", value))
+                .foregroundStyle(Color.accGreen.opacity(0.25))
+              LineMark(x: .value("t", index), y: .value("SNR", value)).foregroundStyle(Color.accGreen)
+            }
+          }.chartXAxis(.hidden).chartYScale(domain: .automatic(includesZero: false))
+        }.frame(width: 220)
+      }
+    }.padding(12).frame(height: 150)
+      .background(Color.black, in: RoundedRectangle(cornerRadius: 14))
+      .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.accBorder, lineWidth: 1.4))
   }
 }

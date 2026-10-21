@@ -84,6 +84,26 @@ import SwiftUI
         $0.frequency = ham ? 1.08e6 : 98.1e6
         $0.mode = ham ? .am : .wfm
       }
+      if ProcessInfo.processInfo.environment["SDR_OPT"] == "1" {
+        // Optimizer only: detect, centre and fit bandwidth at the configured frequency.
+        let steps = OSAllocatedUnfairLock(initialState: [TuneOptimizer.Step]())
+        let done = OSAllocatedUnfairLock(initialState: String?.none)
+        worker.onOptimizerStep = { step in steps.withLock { $0.append(step) } }
+        worker.onOptimizerDone = { offset, width, gain, failure in
+          done.withLock {
+            $0 = failure ?? String(format: "centre %+.0f Hz · bandwidth %.2f kHz · gain %+.1f dB", offset, width / 1e3, gain)
+          }
+        }
+        worker.update { $0.optimizeRequest += 1 }
+        worker.start()
+        for _ in 0..<60 where done.withLock({ $0 }) == nil { try? await Task.sleep(for: .milliseconds(500)) }
+        for step in steps.withLock({ $0 }) {
+          print(String(format: "SDR opt: %2d %@ %@ centre %+6.0f Hz bw %6.2f kHz snr %5.1f dB", step.index, step.phase.rawValue, step.accepted ? "✓" : "·", step.offset, step.bandwidth / 1e3, step.snr))
+        }
+        print("SDR opt: result \(done.withLock { $0 } ?? "timed out") · statuses \(log.withLock { $0.statuses }.joined(separator: " | "))")
+        NSApplication.shared.terminate(nil)
+        return
+      }
       worker.start()
       try? await Task.sleep(for: .seconds(20))
       let scan = log.withLock { $0 }
