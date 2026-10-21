@@ -337,8 +337,20 @@ struct SettingsView: View {
       }.background(Color.black, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accBorder, lineWidth: 1.2))
       Text(
-        "Accounts are checked every 60 seconds while USS ACC runs (newest 40 Inbox messages, read without marking them read). Passwords are stored in your login Keychain. Delete rules move mail to the account's Trash and never expunge."
+        "Accounts are checked every 60 seconds while USS ACC runs. The first sync downloads the newest 200 Inbox messages, then only new mail; nothing is marked read. Passwords are stored in your login Keychain. Delete rules move mail to the account's Trash and never expunge."
       ).font(.acc(16)).foregroundStyle(Color.accDim)
+      HStack(spacing: 18) {
+        Image(systemName: "externaldrive").font(.system(size: 24)).foregroundStyle(Color.accLavender)
+        VStack(alignment: .leading, spacing: 2) {
+          Text("LOCAL MAIL STORE").font(.lcars(20)).foregroundStyle(Color.accLavender)
+          Text(
+            "\(model.storedCount) messages · \(model.archivedCount) archived · archive \(ByteCountFormatter.string(fromByteCount: model.archiveSize, countStyle: .file))"
+          ).font(.acc(18))
+          Text(
+            "Last 14 days are kept in full. Older bodies are compressed into per-account archive packs; they stay searchable and are restored when opened."
+          ).font(.acc(15)).foregroundStyle(Color.accDim)
+        }
+      }
       ACCDivider()
       Text("Calendar").font(.lcars(24)).foregroundStyle(Color.accLavender)
       Text(model.calendarStatus).font(.acc(16))

@@ -10,7 +10,12 @@ struct CommsView: View {
   @State private var mode: Channel = .message
   @State private var destination = ""
   var items: [Communication] {
-    model.communications.filter {
+    // Live searches use the local store's index, which also covers archived mail.
+    if !search.isEmpty, let stored = model.searchStored(search) {
+      let loaded = Dictionary(model.communications.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+      return stored.map { loaded[$0.id] ?? $0 }.filter { !$0.trashed && $0.quarantined == quarantine }
+    }
+    return model.communications.filter {
       !$0.trashed && $0.quarantined == quarantine
         && (search.isEmpty
           || ($0.name + $0.address + $0.subject + $0.body).localizedCaseInsensitiveContains(search))
@@ -110,6 +115,9 @@ struct CommsView: View {
           if sources > 0 {
             ACCButton(title: "REFRESH", symbol: "arrow.clockwise") { Task { await model.refreshMail() } }
               .disabled(model.busy)
+            ACCButton(title: "OLDER", symbol: "clock.arrow.circlepath", kind: .outline) {
+              Task { await model.loadOlder() }
+            }.disabled(model.busy).help("Download up to 200 older messages per IMAP account")
           }
         }
       }
@@ -153,6 +161,9 @@ struct CommsView: View {
           }.padding(.top, 6)
         }
         composer(for: selected)
+          .task(id: thread.filter(\.archived).map(\.id)) {
+            for item in thread where item.archived { model.retrieve(item.id) }
+          }
       } else {
         EmptyStation(
           symbol: "bubble.left.and.bubble.right", title: "SELECT A CONVERSATION",
@@ -181,7 +192,12 @@ struct CommsView: View {
         }.padding(.top, 10)
         VStack(alignment: .leading, spacing: 8) {
           if !item.subject.isEmpty { Text(item.subject).font(.acc(23, weight: .medium)) }
-          Text(item.body).font(.acc(20)).textSelection(.enabled)
+          if item.archived {
+            Label("Retrieving from archive…", systemImage: "archivebox").font(.acc(18))
+              .foregroundStyle(Color.accLavender)
+          } else {
+            Text(item.body).font(.acc(20)).textSelection(.enabled)
+          }
           HStack(spacing: 14) {
             if let classification = item.classification {
               Text("\(classification.reason) · \(classification.source)").font(.acc(15))

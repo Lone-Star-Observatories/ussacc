@@ -365,9 +365,28 @@ public actor IMAPSession {
     -> [IMAPFetched]
   {
     guard exists > 0, count > 0 else { return [] }
-    let first = max(1, exists - count + 1)
-    let responses = try await command(
-      "FETCH \(first):\(exists) (UID INTERNALDATE BODY.PEEK[]<0.\(maxBytes)>)")
+    return try await fetch("FETCH \(max(1, exists - count + 1)):\(exists)", maxBytes: maxBytes)
+  }
+  /// Messages with UID greater than `uid` (new mail since the last sync).
+  public func fetchNewer(than uid: UInt32, maxBytes: Int = 24000) async throws -> [IMAPFetched] {
+    // `n:*` always returns at least the last message, so filter to genuinely newer UIDs.
+    try await fetch("UID FETCH \(uid + 1):*", maxBytes: maxBytes).filter { $0.uid > uid }
+  }
+  /// Up to `count` messages older than `uid` (backfill), using sequence numbers.
+  public func fetchOlder(than uid: UInt32, count: Int, maxBytes: Int = 24000) async throws
+    -> [IMAPFetched]
+  {
+    guard uid > 1, count > 0 else { return [] }
+    // SEARCH (not UID SEARCH) returns sequence numbers of messages below `uid`.
+    let responses = try await command("SEARCH UID 1:\(uid - 1)")
+    let sequences = responses.filter { $0.first?.text?.uppercased() == "SEARCH" }
+      .flatMap { $0.dropFirst().compactMap { Int($0.text ?? "") } }
+    guard let last = sequences.max() else { return [] }
+    let first = max(sequences.min() ?? 1, last - count + 1)
+    return try await fetch("FETCH \(first):\(last)", maxBytes: maxBytes).filter { $0.uid < uid }
+  }
+  private func fetch(_ prefix: String, maxBytes: Int) async throws -> [IMAPFetched] {
+    let responses = try await command("\(prefix) (UID INTERNALDATE BODY.PEEK[]<0.\(maxBytes)>)")
     return responses.compactMap { tokens in
       guard tokens.count >= 3, tokens[1].text?.uppercased() == "FETCH" else { return nil }
       let items = tokens[2].items

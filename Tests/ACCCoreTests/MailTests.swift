@@ -169,6 +169,29 @@ let sampleMessage = """
     #expect(await transport.remaining == 0)
   }
 
+  @Test func incrementalAndBackfillFetches() async throws {
+    let msg = "Subject: x\r\n\r\nbody"
+    let transport = ScriptedTransport(
+      greeting: "* OK ready\r\n",
+      steps: [
+        (
+          "UID FETCH 101:* (UID INTERNALDATE BODY.PEEK[]<0.24000>)",
+          "* 9 FETCH (UID 100 BODY[]<0> {\(msg.utf8.count)}\r\n\(msg))\r\nTAG OK\r\n"
+        ),
+        ("SEARCH UID 1:49", "* SEARCH 1 2 3 4 5\r\nTAG OK\r\n"),
+        (
+          "FETCH 4:5 (UID",
+          "* 4 FETCH (UID 40 BODY[]<0> {\(msg.utf8.count)}\r\n\(msg))\r\n* 5 FETCH (UID 45 BODY[]<0> {\(msg.utf8.count)}\r\n\(msg))\r\nTAG OK\r\n"
+        ),
+      ])
+    let session = IMAPSession(transport: transport)
+    try await session.greeting()
+    // Only the last message (UID 100) exists, which is not newer than 100.
+    #expect(try await session.fetchNewer(than: 100).isEmpty)
+    #expect(try await session.fetchOlder(than: 50, count: 2).map(\.uid) == [45, 40])
+    #expect(await transport.remaining == 0)
+  }
+
   @Test func changedUIDValidityKeepsMessage() async throws {
     let transport = ScriptedTransport(
       greeting: "* OK ready\r\n",

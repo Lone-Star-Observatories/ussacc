@@ -56,6 +56,12 @@ enum Station: String, CaseIterable, Identifiable {
   private var mailTask: Task<Void, Never>?
   private var appleMailEnabled = false
   private var prefs = SessionPreferences()
+  /// Local copy of downloaded mail; nil only if the database could not be opened.
+  private var store: MessageStore?
+  @Published var storedCount = 0
+  @Published var archivedCount = 0
+  /// Mail older than this stays indexed but its body moves to compressed archive packs.
+  static let hotWindow: TimeInterval = 14 * 86400
   /// Keychain reads are cached for the session to avoid repeated access prompts.
   private var passwords: [String: String] = [:]
   private var refreshBusy = false
@@ -78,6 +84,9 @@ enum Station: String, CaseIterable, Identifiable {
     accounts =
       (try? LocalPersistence.load(
         [MailAccount].self, from: folder.appendingPathComponent("accounts.json"))) ?? []
+    do {
+      store = try MessageStore(url: folder.appendingPathComponent("messages.sqlite"))
+    } catch { status = "Message store unavailable: \(error.localizedDescription)" }
     prefs =
       (try? LocalPersistence.load(
         SessionPreferences.self, from: folder.appendingPathComponent("preferences.json")))
@@ -204,6 +213,9 @@ enum Station: String, CaseIterable, Identifiable {
         [JourneyLeg].self, from: folder.appendingPathComponent("journeys.json"))) ?? []
     status = "Live workspace · connect accounts in DEV → Settings"
     calendarStatus = "Calendar not connected"
+    communications = (try? store?.recent()) ?? []
+    selectedIdentity = communications.first?.identity
+    runArchival()
     appleMailEnabled = prefs.appleMail
     if appleMailEnabled || accounts.contains(where: \.enabled) {
       startPolling()
@@ -342,8 +354,13 @@ enum Station: String, CaseIterable, Identifiable {
     accounts.removeAll { $0.id == id }
     accountStatus[id] = nil
     communications.removeAll { $0.id.hasPrefix("imap:\(id):") }
+    try? store?.delete(sourcePrefix: "imap:\(id):")
+    try? store?.setSyncState(nil, account: id)
+    store?.deleteArchive(key: id)
+    storedCount = (try? store?.count()) ?? 0
+    archivedCount = (try? store?.archivedCount()) ?? 0
     try? persistAccounts()
-    status = "Account removed. Its password was deleted from the Keychain."
+    status = "Account removed. Its password and stored mail were deleted."
   }
   /// Every Apple Mail account, marked when it can't be added. Nothing is saved here.
   func appleMailCandidates() async throws -> [AppleMailCandidate] {
@@ -391,9 +408,14 @@ enum Station: String, CaseIterable, Identifiable {
         continue
       }
       do {
-        let batch = try await IMAPMailSource.fetch(account, password: password)
-        batches.append(batch)
-        accountStatus[account.id] = "Checked \(Date.now.accClock()) · \(batch.items.count) recent"
+        let state = try? store?.syncState(account: account.id)
+        let batch = try await IMAPMailSource.sync(account, password: password, state: state)
+        guard token == generation, !demo else { return }
+        try? store?.setSyncState(batch.state, account: account.id)
+        batches.append((batch.source, batch.items))
+        accountStatus[account.id] =
+          "Checked \(Date.now.accClock()) · \(batch.items.count) new"
+          + (state == nil || state?.uidValidity != batch.state.uidValidity ? " (initial sync)" : "")
       } catch {
         accountStatus[account.id] = error.localizedDescription
         failures.append(account.title)
@@ -405,6 +427,9 @@ enum Station: String, CaseIterable, Identifiable {
       let existing = Set(communications.map(\.id))
       let arrivals = ledger.receive(fetched.map(\.id), source: source)
       persistLedger()
+      do { try store?.insert(fetched, source: source) } catch {
+        status = "Couldn't save mail locally: \(error.localizedDescription)"
+      }
       communications += fetched.filter { !existing.contains($0.id) }.map { item in
         var item = item
         item.quarantined = ledger.quarantinedIDs.contains(item.id)
@@ -420,6 +445,7 @@ enum Station: String, CaseIterable, Identifiable {
     }
     communications.sort { $0.date > $1.date }
     if selectedIdentity == nil { selectedIdentity = communications.first?.identity }
+    runArchival()
     let sources = batches.count
     status =
       sources == 0 && failures.isEmpty
@@ -428,7 +454,8 @@ enum Station: String, CaseIterable, Identifiable {
         + (failures.isEmpty ? "" : " · failed: \(failures.joined(separator: ", "))")
   }
   func classify(id: String, applyActions: Bool = false, token: Int? = nil) async {
-    guard let item = communications.first(where: { $0.id == id }) else { return }
+    guard var item = communications.first(where: { $0.id == id }) else { return }
+    if item.archived, let body = try? store?.body(id: id, restore: false) { item.body = body }
     let context = token ?? generation
     let savedPolicy = policy
     let result = await Intelligence.classify(
@@ -441,6 +468,7 @@ enum Station: String, CaseIterable, Identifiable {
     if !item.isDemo {
       ledger.classifications[id] = result
       persistLedger()
+      try? store?.updateState(id: id, classification: .some(result))
     }
     guard applyActions, !item.isDemo, !demo, savedPolicy == policy else { return }
     let decision = PolicyDecision.evaluate(communications[index], policy: policy)
@@ -451,14 +479,99 @@ enum Station: String, CaseIterable, Identifiable {
         communications[index].quarantined = true
         ledger.quarantinedIDs.insert(id)
         persistLedger()
+        try? store?.updateState(id: id, quarantined: true)
       case .delete:
         try await trash(id)
+        try? store?.updateState(id: id, trashed: true)
         guard context == generation, let fresh = communications.firstIndex(where: { $0.id == id })
         else { return }
         communications[fresh].trashed = true
       }
       if decision.notify { notify(communications.first { $0.id == id } ?? item) }
     } catch { status = "Filter action failed; message retained: \(error.localizedDescription)" }
+  }
+  // MARK: Local store
+  /// Rolls mail outside the hot window into archive packs and updates the loaded list.
+  func runArchival() {
+    guard !demo, let store else { return }
+    let cutoff = Date.now.addingTimeInterval(-Self.hotWindow)
+    var archived: Set<String> = []
+    do {
+      for _ in 0..<50 {
+        let batch = try store.archive(olderThan: cutoff)
+        if batch.isEmpty { break }
+        archived.formUnion(batch)
+      }
+    } catch { status = "Archiving failed; mail kept in the database: \(error.localizedDescription)" }
+    if !archived.isEmpty {
+      for index in communications.indices where archived.contains(communications[index].id) {
+        communications[index].archived = true
+        communications[index].body = ""
+      }
+    }
+    storedCount = (try? store.count()) ?? storedCount
+    archivedCount = (try? store.archivedCount()) ?? archivedCount
+  }
+  /// Takes an archived body out of its pack and back into the database (hot for another window).
+  func retrieve(_ id: String) {
+    guard let store, let body = try? store.body(id: id, restore: true) else { return }
+    if let index = communications.firstIndex(where: { $0.id == id }) {
+      communications[index].body = body
+      communications[index].archived = false
+    } else if var item = try? store.message(id: id) {
+      item.body = body
+      item.archived = false
+      communications.append(item)
+    }
+    archivedCount = (try? store.archivedCount()) ?? archivedCount
+  }
+  var archiveSize: Int64 { store?.archiveSize ?? 0 }
+  /// Full-text search across all stored mail (live workspace only).
+  func searchStored(_ text: String) -> [Communication]? {
+    guard !demo, let store else { return nil }
+    return try? store.search(text)
+  }
+  var storeSize: Int64 { store?.fileSize ?? 0 }
+  /// Downloads up to 200 older messages per IMAP account. Backfill never triggers filter rules.
+  func loadOlder() async {
+    guard !demo, !refreshBusy, let store else { return }
+    refreshBusy = true
+    busy = true
+    defer {
+      refreshBusy = false
+      busy = false
+    }
+    let token = generation
+    var added = 0
+    var failures: [String] = []
+    for account in accounts where account.enabled {
+      guard let password = password(for: account),
+        let state = try? store.syncState(account: account.id), state.lowestUID > 1
+      else { continue }
+      do {
+        let batch = try await IMAPMailSource.older(account, password: password, state: state)
+        guard token == generation, !demo else { return }
+        try store.insert(batch.items, source: batch.source)
+        try store.setSyncState(batch.state, account: account.id)
+        ledger.markSeen(batch.items.map(\.id))
+        let existing = Set(communications.map(\.id))
+        communications += batch.items.filter { !existing.contains($0.id) }.map { item in
+          var item = item
+          item.classification = ledger.classifications[item.id]
+          item.quarantined = ledger.quarantinedIDs.contains(item.id)
+          return item
+        }
+        added += batch.items.count
+      } catch { failures.append("\(account.title): \(error.localizedDescription)") }
+    }
+    persistLedger()
+    communications.sort { $0.date > $1.date }
+    runArchival()
+    status =
+      added == 0 && failures.isEmpty
+      ? "No older mail to load."
+      : "Loaded \(added) older messages"
+        + (failures.isEmpty ? "" : " · failed: \(failures.joined(separator: "; "))")
   }
   // MARK: Retroactive filtering
   /// Live messages a retroactive run would score; manual corrections are never re-scored.
@@ -502,6 +615,7 @@ enum Station: String, CaseIterable, Identifiable {
       guard let index = current(entry) else { continue }
       communications[index].quarantined = true
       ledger.quarantinedIDs.insert(entry.id)
+      try? store?.updateState(id: entry.id, quarantined: true)
       quarantined += 1
     }
     persistLedger()
@@ -526,6 +640,7 @@ enum Station: String, CaseIterable, Identifiable {
           try await IMAPMailSource.trash(account, password: password, ids: ids)
         }
         for id in ids {
+          try? store?.updateState(id: id, trashed: true)
           if let index = communications.firstIndex(where: { $0.id == id }) {
             communications[index].trashed = true
           }
@@ -551,6 +666,7 @@ enum Station: String, CaseIterable, Identifiable {
     if !communications[index].isDemo {
       ledger.classifications[id] = result
       persistLedger()
+      try? store?.updateState(id: id, classification: .some(result))
     }
   }
   func restore(_ id: String) {
@@ -559,6 +675,7 @@ enum Station: String, CaseIterable, Identifiable {
     }
     ledger.quarantinedIDs.remove(id)
     persistLedger()
+    try? store?.updateState(id: id, quarantined: false)
   }
   private func persistLedger() {
     do { try LocalPersistence.save(ledger, to: folder.appendingPathComponent("intake.json")) } catch

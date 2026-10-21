@@ -101,6 +101,8 @@ public struct Communication: Codable, Identifiable, Equatable, Sendable {
   public var isDemo: Bool
   public var quarantined = false
   public var trashed = false
+  /// Older than the hot window: body lives in an archive pack until retrieved.
+  public var archived = false
   public init(
     id: String = UUID().uuidString, name: String, address: String, channel: Channel,
     subject: String = "", body: String, date: Date = .now, classification: Classification? = nil,
@@ -339,6 +341,8 @@ public struct IntakeLedger: Codable, Equatable, Sendable {
     if source == Self.appleMail { baselineEstablished = true }
     return arrivals
   }
+  /// Records messages as seen without treating them as arrivals (used for backfilling older mail).
+  public mutating func markSeen(_ ids: [String]) { seenIDs.formUnion(ids) }
 }
 
 /// Workspace state restored on launch. Account access is only resumed for sources the user

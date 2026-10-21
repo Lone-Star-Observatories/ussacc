@@ -135,32 +135,65 @@ enum IMAPMailSource {
       throw error
     }
   }
-  /// Returns the source key (account + UIDVALIDITY) and the newest inbox messages.
-  static func fetch(_ account: MailAccount, password: String, limit: Int = 40) async throws
-    -> (source: String, items: [Communication])
-  {
+  /// Incremental sync. First run (or after a UIDVALIDITY reset) takes the newest `initialCount`
+  /// messages; later runs fetch only UIDs above the stored high-water mark.
+  static func sync(
+    _ account: MailAccount, password: String, state: MessageStore.SyncState?,
+    initialCount: Int = 200
+  ) async throws -> (source: String, items: [Communication], state: MessageStore.SyncState) {
     let session = try await session(account, password: password)
     do {
       let inbox = try await session.select()
-      let fetched = try await session.fetchLatest(exists: inbox.exists, count: limit)
+      let fetched: [IMAPFetched]
+      var next: MessageStore.SyncState
+      if let state, state.uidValidity == inbox.uidValidity, inbox.uidValidity != 0 {
+        fetched = inbox.exists == 0 ? [] : try await session.fetchNewer(than: state.highestUID)
+        next = state
+        next.highestUID = max(state.highestUID, fetched.map(\.uid).max() ?? 0)
+      } else {
+        fetched = try await session.fetchLatest(exists: inbox.exists, count: initialCount)
+        next = .init(
+          uidValidity: inbox.uidValidity, highestUID: fetched.map(\.uid).max() ?? 0,
+          lowestUID: fetched.map(\.uid).min() ?? 0)
+      }
       await session.logout()
       let source = "imap:\(account.id):\(inbox.uidValidity)"
-      return (
-        source,
-        fetched.map { message in
-          let parsed = MailParser.parse(message.raw)
-          return Communication(
-            id: "\(source):\(message.uid)",
-            name: parsed.fromName.isEmpty ? "Unknown sender" : parsed.fromName,
-            address: parsed.fromAddress, channel: .email, subject: parsed.subject,
-            body: String(parsed.body.prefix(24000)),
-            date: parsed.date ?? message.internalDate ?? .now)
-        }
-      )
+      return (source, fetched.map { communication($0, source: source) }, next)
     } catch {
       await session.logout()
       throw error
     }
+  }
+  /// Backfills up to `count` messages older than the oldest one stored.
+  static func older(
+    _ account: MailAccount, password: String, state: MessageStore.SyncState, count: Int = 200
+  ) async throws -> (source: String, items: [Communication], state: MessageStore.SyncState) {
+    let session = try await session(account, password: password)
+    do {
+      let inbox = try await session.select()
+      guard inbox.uidValidity == state.uidValidity else {
+        await session.logout()
+        throw IntegrationError.message("Mailbox changed; it will resync on the next check.")
+      }
+      let fetched = try await session.fetchOlder(than: state.lowestUID, count: count)
+      await session.logout()
+      var next = state
+      if let lowest = fetched.map(\.uid).min() { next.lowestUID = lowest }
+      let source = "imap:\(account.id):\(inbox.uidValidity)"
+      return (source, fetched.map { communication($0, source: source) }, next)
+    } catch {
+      await session.logout()
+      throw error
+    }
+  }
+  private static func communication(_ message: IMAPFetched, source: String) -> Communication {
+    let parsed = MailParser.parse(message.raw)
+    return Communication(
+      id: "\(source):\(message.uid)",
+      name: parsed.fromName.isEmpty ? "Unknown sender" : parsed.fromName,
+      address: parsed.fromAddress, channel: .email, subject: parsed.subject,
+      body: String(parsed.body.prefix(24000)),
+      date: parsed.date ?? message.internalDate ?? .now)
   }
   static func test(_ account: MailAccount, password: String) async throws -> String {
     let session = try await session(account, password: password)
