@@ -121,3 +121,25 @@ import Testing
   let partial = try JSONDecoder().decode(SessionPreferences.self, from: Data(#"{"live":true}"#.utf8))
   #expect(partial.live && !partial.appleMail && !partial.calendar)
 }
+
+@Test func retroactivePlanAppliesSavedRulesButKeepsOP5UnscoredAndDemo() {
+  var policy = FilterPolicy()
+  policy.enabled = false  // retroactive runs are explicit and ignore the automatic toggle
+  for i in policy.rules.indices { policy.rules[i].disposition = .delete }
+  policy.rules[1].disposition = .quarantine  // OP2
+  func item(_ id: String, _ level: Int?, demo: Bool = false, quarantined: Bool = false) -> Communication {
+    var c = Communication(
+      id: id, name: "x", address: "x@y.z", channel: .email, body: "",
+      classification: level.map { .init(level: $0, reason: "", source: "t") }, isDemo: demo)
+    c.quarantined = quarantined
+    return c
+  }
+  let plan = RetroactivePlan.make(
+    [item("a", 5), item("b", 1), item("c", nil), item("d", 2), item("e", 2, quarantined: true),
+     item("f", 1, demo: true)], policy: policy)
+  #expect(plan.entries.map(\.id) == ["a", "b", "c", "d", "e"])
+  #expect(plan.entries.first { $0.id == "a" }?.disposition == .keep)
+  #expect(plan.entries.first { $0.id == "c" }?.disposition == .keep)
+  #expect(plan.count(.delete) == 1 && plan.count(.quarantine) == 1 && plan.count(.keep) == 3)
+  #expect(plan.actions.map(\.id) == ["b", "d"])
+}

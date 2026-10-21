@@ -170,50 +170,82 @@ enum IMAPMailSource {
     return "Connected · \(inbox.exists) messages in Inbox · "
       + (trash.map { "Trash: \($0)" } ?? "no Trash folder (Delete rules will keep mail)")
   }
-  /// `id` is `imap:<account>:<uidvalidity>:<uid>`.
-  static func trash(_ account: MailAccount, password: String, id: String) async throws {
-    let parts = id.split(separator: ":")
-    guard parts.count == 4, let validity = UInt32(parts[2]), let uid = UInt32(parts[3]) else {
-      throw IntegrationError.message("Invalid IMAP message identifier.")
+  /// Moves messages (ids `imap:<account>:<uidvalidity>:<uid>`) to Trash in one session.
+  static func trash(_ account: MailAccount, password: String, ids: [String]) async throws {
+    var byValidity: [UInt32: [UInt32]] = [:]
+    for id in ids {
+      let parts = id.split(separator: ":")
+      guard parts.count == 4, let validity = UInt32(parts[2]), let uid = UInt32(parts[3]) else {
+        throw IntegrationError.message("Invalid IMAP message identifier.")
+      }
+      byValidity[validity, default: []].append(uid)
     }
+    guard !byValidity.isEmpty else { return }
     let session = try await session(account, password: password)
     do {
-      try await session.moveToTrash(uid: uid, uidValidity: validity)
+      for (validity, uids) in byValidity {
+        try await session.moveToTrash(uids: uids, uidValidity: validity)
+      }
       await session.logout()
     } catch {
       await session.logout()
       throw error
     }
   }
+  static func trash(_ account: MailAccount, password: String, id: String) async throws {
+    try await trash(account, password: password, ids: [id])
+  }
+}
+
+/// One Apple Mail account and whether it can be added here.
+struct AppleMailCandidate: Identifiable {
+  let id = UUID()
+  var account: MailAccount
+  /// nil when the account can be imported; otherwise why not.
+  var unavailable: String?
 }
 
 /// Reads account settings from Apple Mail. Mail does not expose passwords to automation.
 enum AppleMailAccountImport {
-  static func accounts() throws -> [MailAccount] {
-    let script = """
-      tell application "Mail"
-          set out to {}
-          repeat with a in accounts
-              try
-                  set kind to (account type of a) as text
-                  set host to ""
-                  set portNumber to 993
-                  set login to ""
-                  try
-                      set host to server name of a
-                  end try
-                  try
-                      set portNumber to port of a
-                  end try
-                  try
-                      set login to user name of a
-                  end try
-                  set end of out to {name of a, kind, host, portNumber, login, (email addresses of a), (enabled of a)}
-              end try
-          end repeat
-          return out
-      end tell
-      """
+  // Variable names avoid Mail's scripting terms (e.g. `kind`, `host`), which cannot be assigned.
+  static let script = """
+    tell application "Mail"
+        set out to {}
+        repeat with acct in accounts
+            set acctName to ""
+            set acctType to ""
+            set acctServer to ""
+            set acctPort to 0
+            set acctUser to ""
+            set acctEmails to {}
+            set acctEnabled to true
+            try
+                set acctName to name of acct
+            end try
+            try
+                set acctType to (account type of acct) as text
+            end try
+            try
+                set acctServer to server name of acct
+            end try
+            try
+                set acctPort to port of acct
+            end try
+            try
+                set acctUser to user name of acct
+            end try
+            try
+                set acctEmails to email addresses of acct
+            end try
+            try
+                set acctEnabled to enabled of acct
+            end try
+            set end of out to {acctName, acctType, acctServer, acctPort, acctUser, acctEmails, acctEnabled}
+        end repeat
+        return out
+    end tell
+    """
+  static func candidates(existing: [MailAccount]) throws -> [AppleMailCandidate] {
     var error: NSDictionary?
     guard let apple = NSAppleScript(source: script) else {
       throw IntegrationError.message("Unable to prepare Apple Mail automation.")
@@ -224,31 +256,50 @@ enum AppleMailAccountImport {
         (error[NSAppleScript.errorMessage] as? String) ?? "Apple Mail automation failed.")
     }
     guard list.numberOfItems > 0 else { return [] }
-    return (1...list.numberOfItems).compactMap { index in
+    var seen = Set(existing.map { key($0.username, $0.host) })
+    return (1...list.numberOfItems).compactMap { index -> AppleMailCandidate? in
       guard let row = list.atIndex(index) else { return nil }
       let name = row.atIndex(1)?.stringValue ?? ""
       let kind = (row.atIndex(2)?.stringValue ?? "").lowercased()
       var host = row.atIndex(3)?.stringValue ?? ""
-      var port = Int(row.atIndex(4)?.int32Value ?? 993)
+      var port = Int(row.atIndex(4)?.int32Value ?? 0)
       let login = row.atIndex(5)?.stringValue ?? ""
       var emails: [String] = []
       if let list = row.atIndex(6), list.numberOfItems > 0 {
         emails = (1...list.numberOfItems).compactMap { list.atIndex($0)?.stringValue }
       }
-      let email = emails.first ?? (login.contains("@") ? login : "")
-      // POP and Exchange accounts have no compatible IMAP inbox to read.
-      guard !email.isEmpty, !["pop", "ews", "exchange"].contains(where: kind.contains) else {
-        return nil
-      }
-      let provider =
-        kind.contains("icloud") ? .icloud : MailProvider.detect(host: host, email: email)
+      let enabled = row.atIndex(7)?.booleanValue ?? true
+      let isICloud = kind.contains("icloud")
+      // iCloud lists the Apple ID first, which may be another provider's address.
+      let email =
+        (isICloud
+          ? emails.first { ["@icloud.com", "@me.com", "@mac.com"].contains(where: $0.lowercased().hasSuffix) }
+          : nil) ?? emails.first ?? (login.contains("@") ? login : login)
+      let provider = isICloud ? .icloud : MailProvider.detect(host: host, email: email)
       if let preset = provider.host, host.isEmpty || provider != .imap { host = preset }
       // Mail reports 143 for STARTTLS accounts; the TLS port is the safe equivalent.
       if port == 143 || port == 0 { port = 993 }
-      let username = provider == .icloud || provider == .gmail || login.isEmpty ? email : login
-      return MailAccount(
+      let username = isICloud ? email : (login.isEmpty ? email : login)
+      let account = MailAccount(
         provider: provider, name: name, email: email, username: username, host: host, port: port,
         enabled: true, importedFromAppleMail: true)
+      var reason: String?
+      if kind.contains("pop") {
+        reason = "POP account — not supported"
+      } else if kind.contains("ews") || kind.contains("exchange") {
+        reason = "Exchange account — not supported"
+      } else if email.isEmpty || host.isEmpty {
+        reason = "No server settings available from Mail"
+      } else if !seen.insert(key(username, host)).inserted {
+        reason = existing.contains { key($0.username, $0.host) == key(username, host) }
+          ? "Already added" : "Duplicate of an account above"
+      } else if !enabled {
+        reason = nil  // disabled in Mail, still importable
+      }
+      return AppleMailCandidate(account: account, unavailable: reason)
     }
+  }
+  private static func key(_ user: String, _ host: String) -> String {
+    user.lowercased() + "@" + host.lowercased()
   }
 }

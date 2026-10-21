@@ -155,6 +155,20 @@ let sampleMessage = """
     #expect(await transport.remaining == 0)
   }
 
+  @Test func batchMoveUsesOneUIDSet() async throws {
+    let transport = ScriptedTransport(
+      greeting: "* OK [CAPABILITY IMAP4rev1 MOVE] ready\r\n",
+      steps: [
+        ("LIST", "* LIST (\\Trash) \"/\" \"Trash\"\r\nTAG OK\r\n"),
+        ("SELECT", "* OK [UIDVALIDITY 3] ok\r\nTAG OK\r\n"),
+        ("UID MOVE 4,7,9 \"Trash\"", "TAG OK\r\n"),
+      ])
+    let session = IMAPSession(transport: transport)
+    try await session.greeting()
+    try await session.moveToTrash(uids: [4, 7, 9], uidValidity: 3)
+    #expect(await transport.remaining == 0)
+  }
+
   @Test func changedUIDValidityKeepsMessage() async throws {
     let transport = ScriptedTransport(
       greeting: "* OK ready\r\n",

@@ -47,6 +47,7 @@ struct SettingsView: View {
   @State private var testing = false
   @State private var editing: AccountDraft?
   @State private var importing = false
+  @State private var retro = false
   var body: some View {
     ACCPanel(padding: 12) {
       HStack(alignment: .top, spacing: 18) {
@@ -110,16 +111,19 @@ struct SettingsView: View {
         known = draft.knownAddresses.joined(separator: "\n")
       }.buttonStyle(.plain).font(.lcars(18)).foregroundStyle(Color.accLavender)
       ACCButton(
-        title: testing ? "CLASSIFYING…" : "TEST ON SAMPLE", kind: .outline, size: 22, height: 50
-      ) { runTest() }.disabled(testing || sample.isEmpty).frame(width: 260)
+        title: testing ? "CLASSIFYING…" : "TEST ON SAMPLE", kind: .outline, size: 20, height: 50
+      ) { runTest() }.disabled(testing || sample.isEmpty).fixedSize()
+      ACCButton(title: "APPLY TO EXISTING", kind: .outline, size: 20, height: 50) { retro = true }
+        .fixedSize().help("Score mail already in your inboxes and apply the saved rules")
       ACCButton(title: "SAVE RULES", primary: true, size: 22, height: 50) {
         draft.knownAddresses = parsedKnown
         if let i = draft.rules.firstIndex(where: { $0.level == 5 }) {
           draft.rules[i].disposition = .keep
         }
         model.savePolicy(draft)
-      }.frame(width: 190)
+      }.fixedSize()
     }.padding(.horizontal, 18).padding(.vertical, 6)
+      .sheet(isPresented: $retro) { RetroactiveSheet(unsaved: unsaved).environmentObject(model) }
       .background(Color.black, in: RoundedRectangle(cornerRadius: 12))
       .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accBorder, lineWidth: 1.2))
   }
@@ -559,52 +563,207 @@ struct AppleMailImportSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var model: AppModel
   let onImport: ([MailAccount]) -> Void
-  @State private var found: [MailAccount] = []
-  @State private var selected: Set<String> = []
-  @State private var message = "Reading accounts from Apple Mail…"
+  @State private var found: [AppleMailCandidate] = []
+  @State private var selected: Set<UUID> = []
+  @State private var message = ""
   @State private var loading = true
+  var available: [AppleMailCandidate] { found.filter { $0.unavailable == nil } }
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("IMPORT FROM APPLE MAIL").font(.lcars(34)).foregroundStyle(Color.accPeach)
       Text(
-        "Server settings are copied from Mail. Mail does not share passwords, so you'll enter an app password for each account next."
+        "Choose the accounts to add. Server settings are copied from Mail; Mail does not share passwords, so you'll enter an app password for each one next."
       ).font(.acc(17)).foregroundStyle(Color.accDim)
       if loading {
-        ProgressView().controlSize(.small)
+        HStack(spacing: 10) {
+          ProgressView().controlSize(.small)
+          Text("Reading accounts from Apple Mail…").font(.acc(17))
+        }
       }
-      ForEach(found) { account in
-        Toggle(isOn: Binding(
-          get: { selected.contains(account.id) },
-          set: { on in if on { selected.insert(account.id) } else { selected.remove(account.id) } })
-        ) {
-          VStack(alignment: .leading, spacing: 1) {
-            Text(account.title).font(.acc(20, weight: .medium))
-            Text("\(account.provider.title) · \(account.email) · \(account.host):\(account.port)")
-              .font(.acc(15)).foregroundStyle(Color.accDim)
+      if !available.isEmpty {
+        HStack(spacing: 16) {
+          Button("Select all") { selected = Set(available.map(\.id)) }
+          Button("Select none") { selected = [] }
+        }.buttonStyle(.plain).font(.lcars(16)).foregroundStyle(Color.accLavender)
+      }
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(Array(found.enumerated()), id: \.element.id) { index, candidate in
+            if index > 0 { ACCDivider() }
+            row(candidate)
           }
-        }.toggleStyle(ACCCheckboxStyle())
-      }
+        }
+      }.frame(maxHeight: 420)
       if !loading && found.isEmpty {
-        Text(message).font(.acc(17)).foregroundStyle(Color.accLavender)
+        Text(message.isEmpty ? "Apple Mail has no accounts." : message).font(.acc(17))
+          .foregroundStyle(Color.accPeach).textSelection(.enabled)
       }
       HStack {
         Button("Cancel") { dismiss() }.buttonStyle(.plain).font(.lcars(18))
           .foregroundStyle(Color.accLavender)
         Spacer()
-        ACCButton(title: "CONTINUE", primary: true) {
-          onImport(found.filter { selected.contains($0.id) })
+        ACCButton(title: selected.isEmpty ? "CONTINUE" : "CONTINUE WITH \(selected.count)", primary: true) {
+          onImport(found.filter { selected.contains($0.id) }.map(\.account))
         }.fixedSize().disabled(selected.isEmpty)
       }
-    }.padding(28).frame(width: 600).background(Color.black).preferredColorScheme(.dark)
+    }.padding(28).frame(width: 640).background(Color.black).preferredColorScheme(.dark)
       .task {
         do {
-          found = try await model.appleMailAccounts()
-          selected = Set(found.map(\.id))
-          message = "No IMAP, Gmail, or iCloud accounts found in Apple Mail that aren't already added. POP and Exchange accounts aren't supported."
+          found = try await model.appleMailCandidates()
+          selected = Set(available.map(\.id))
         } catch {
-          message = "Couldn't read Apple Mail: \(error.localizedDescription) Allow USS ACC under System Settings → Privacy & Security → Automation."
+          message =
+            "Couldn't read Apple Mail: \(error.localizedDescription) Allow USS ACC to control Mail under System Settings → Privacy & Security → Automation."
         }
         loading = false
       }
+  }
+  func row(_ candidate: AppleMailCandidate) -> some View {
+    let account = candidate.account
+    let enabled = candidate.unavailable == nil
+    return Button {
+      guard enabled else { return }
+      if selected.contains(candidate.id) { selected.remove(candidate.id) } else {
+        selected.insert(candidate.id)
+      }
+    } label: {
+      HStack(alignment: .top, spacing: 14) {
+        Image(systemName: "checkmark").font(.system(size: 15, weight: .heavy))
+          .foregroundStyle(selected.contains(candidate.id) ? Color.black : .clear)
+          .frame(width: 26, height: 26)
+          .background(
+            selected.contains(candidate.id) ? Color.accLavender : Color.black,
+            in: RoundedRectangle(cornerRadius: 6)
+          )
+          .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.accLavender.opacity(0.8), lineWidth: 1.6))
+        VStack(alignment: .leading, spacing: 2) {
+          HStack(spacing: 10) {
+            Text(account.title).font(.acc(21, weight: .medium))
+            ACCTag(text: account.provider.title, color: enabled ? .accLavender : .accDim)
+          }
+          Text("\(account.email)  ·  \(account.host):\(account.port)").font(.acc(16))
+            .foregroundStyle(Color.accDim)
+          if let reason = candidate.unavailable {
+            Text(reason).font(.acc(16)).foregroundStyle(Color.accPeach)
+          }
+        }
+        Spacer()
+      }.padding(.vertical, 10).opacity(enabled ? 1 : 0.55).contentShape(Rectangle())
+    }.buttonStyle(.plain).disabled(!enabled)
+      .accessibilityAddTraits(selected.contains(candidate.id) ? .isSelected : [])
+  }
+}
+
+/// Two-step retroactive filtering: score and preview, then confirm to apply.
+struct RetroactiveSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var model: AppModel
+  let unsaved: Bool
+  @State private var rescore = true
+  @State private var plan: RetroactivePlan?
+  @State private var result = ""
+  @State private var running = false
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text("APPLY TO EXISTING MAIL").font(.lcars(34)).foregroundStyle(Color.accPeach)
+      if model.demo {
+        Text("Switch to the live workspace and connect mail first. Demo messages are never changed.")
+          .font(.acc(18)).foregroundStyle(Color.accLavender)
+      } else if unsaved {
+        Text("You have unsaved rule changes. Save Rules first so this run uses them.")
+          .font(.acc(18)).foregroundStyle(Color.accPeach)
+      } else if let plan, result.isEmpty {
+        preview(plan)
+      } else if !result.isEmpty {
+        Text(result).font(.acc(18)).foregroundStyle(
+          result.contains("errors") ? Color.accPeach : Color.accGreen
+        ).textSelection(.enabled)
+      } else {
+        intro
+      }
+      if let progress = model.retroProgress {
+        VStack(alignment: .leading, spacing: 6) {
+          ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+            .tint(Color.accPeach)
+          Text("\(progress.phase) \(progress.done) of \(progress.total)…").font(.acc(16))
+            .foregroundStyle(Color.accLavender)
+        }
+      }
+      HStack {
+        Button(result.isEmpty ? "Cancel" : "Done") { dismiss() }.buttonStyle(.plain)
+          .font(.lcars(18)).foregroundStyle(Color.accLavender).disabled(running)
+        Spacer()
+        if !model.demo && !unsaved && result.isEmpty {
+          if let plan {
+            ACCButton(title: "BACK", kind: .outline) { self.plan = nil }.fixedSize().disabled(running)
+            ACCButton(
+              title: plan.actions.isEmpty ? "NOTHING TO APPLY" : "APPLY RULES", primary: true
+            ) {
+              running = true
+              Task {
+                result = await model.applyRetroactive(plan)
+                running = false
+              }
+            }.fixedSize().disabled(running || plan.actions.isEmpty)
+          } else {
+            ACCButton(title: running ? "CLASSIFYING…" : "SCORE & PREVIEW", primary: true) {
+              running = true
+              Task {
+                plan = await model.previewRetroactive(rescore: rescore)
+                running = false
+              }
+            }.fixedSize().disabled(running || model.retroactiveTargets(rescore: rescore).isEmpty && model.communications.isEmpty)
+          }
+        }
+      }
+    }.padding(28).frame(width: 620).background(Color.black).preferredColorScheme(.dark)
+      .interactiveDismissDisabled(running)
+  }
+  var intro: some View {
+    let live = model.communications.filter { !$0.isDemo && !$0.trashed }.count
+    let targets = model.retroactiveTargets(rescore: rescore).count
+    return VStack(alignment: .leading, spacing: 12) {
+      Text(
+        "Scores the \(live) messages USS ACC has loaded (newest 40 per inbox) with your saved OP meanings, then shows what the saved rules would do. Nothing changes until you confirm."
+      ).font(.acc(18))
+      Toggle(isOn: $rescore) {
+        Text("Re-score messages that already have a score (\(targets) to score)").font(.acc(18))
+      }.toggleStyle(ACCCheckboxStyle())
+      Text(
+        "Manual score corrections are kept. OP5 and unscored mail are always kept. No notifications are sent. Scoring takes a moment per message."
+      ).font(.acc(16)).foregroundStyle(Color.accDim)
+    }
+  }
+  func preview(_ plan: RetroactivePlan) -> some View {
+    VStack(alignment: .leading, spacing: 12) {
+      Text("\(plan.entries.count) messages scored with your saved meanings:").font(.acc(18))
+      VStack(spacing: 0) {
+        ForEach([5, 4, 3, 2, 1] as [Int?] + [nil], id: \.self) { level in
+          let count = plan.count(level: level)
+          if count > 0 {
+            HStack {
+              OPBadge(level: level).frame(width: 110, alignment: .leading)
+              Text(level.map { model.policy.meaning(for: $0) } ?? "Model unavailable or unsure")
+                .font(.acc(17)).lineLimit(1)
+              Spacer()
+              Text("\(count)").font(.acc(19, weight: .medium)).frame(width: 40, alignment: .trailing)
+              Text(level.map { model.policy.rule(for: $0).disposition.rawValue } ?? "Keep")
+                .font(.lcars(17)).foregroundStyle(Color.accLavender).frame(width: 100, alignment: .trailing)
+            }.padding(.horizontal, 14).frame(height: 40)
+          }
+        }
+      }.background(Color.accField.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+      HStack(spacing: 18) {
+        Label("\(plan.count(.keep)) kept", systemImage: "tray").foregroundStyle(Color.accText)
+        Label("\(plan.count(.quarantine)) quarantined", systemImage: "archivebox")
+          .foregroundStyle(Color.accLavender)
+        Label("\(plan.count(.delete)) moved to Trash", systemImage: "trash")
+          .foregroundStyle(plan.count(.delete) > 0 ? Color.accPeach : Color.accDim)
+      }.font(.acc(18, weight: .medium))
+      if plan.count(.delete) > 0 {
+        Text("Trash is recoverable from your mail provider; USS ACC never permanently deletes.")
+          .font(.acc(15)).foregroundStyle(Color.accDim)
+      }
+    }
   }
 }

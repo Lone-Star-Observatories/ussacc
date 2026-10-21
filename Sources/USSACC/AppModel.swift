@@ -48,6 +48,8 @@ enum Station: String, CaseIterable, Identifiable {
   @Published var selectedEventID: String?
   @Published var settings = false
   @Published var settingsSection = "Spam Filter"
+  /// Progress of a retroactive filter run, shown in its sheet.
+  @Published var retroProgress: (phase: String, done: Int, total: Int)?
   @Published var modelStatus = Intelligence.availability
   private let calendar = CalendarAdapter()
   private let mail = MailAdapter()
@@ -343,10 +345,9 @@ enum Station: String, CaseIterable, Identifiable {
     try? persistAccounts()
     status = "Account removed. Its password was deleted from the Keychain."
   }
-  /// Apple Mail accounts not already configured here. Nothing is saved until the user adds them.
-  func appleMailAccounts() async throws -> [MailAccount] {
-    let known = Set(accounts.map { $0.email.lowercased() })
-    return try AppleMailAccountImport.accounts().filter { !known.contains($0.email.lowercased()) }
+  /// Every Apple Mail account, marked when it can't be added. Nothing is saved here.
+  func appleMailCandidates() async throws -> [AppleMailCandidate] {
+    try AppleMailAccountImport.candidates(existing: accounts)
   }
   private func persistAccounts() throws {
     try LocalPersistence.save(accounts, to: folder.appendingPathComponent("accounts.json"))
@@ -458,6 +459,89 @@ enum Station: String, CaseIterable, Identifiable {
       }
       if decision.notify { notify(communications.first { $0.id == id } ?? item) }
     } catch { status = "Filter action failed; message retained: \(error.localizedDescription)" }
+  }
+  // MARK: Retroactive filtering
+  /// Live messages a retroactive run would score; manual corrections are never re-scored.
+  func retroactiveTargets(rescore: Bool) -> [Communication] {
+    communications.filter {
+      !$0.isDemo && !$0.trashed && $0.classification?.source != "Manual override"
+        && (rescore || $0.classification?.level == nil)
+    }
+  }
+  /// Step 1: scores loaded mail with the saved definitions. Changes no mail.
+  func previewRetroactive(rescore: Bool) async -> RetroactivePlan? {
+    guard !demo else { return nil }
+    let token = generation
+    let targets = retroactiveTargets(rescore: rescore)
+    retroProgress = ("Classifying", 0, targets.count)
+    defer { retroProgress = nil }
+    for (index, item) in targets.enumerated() {
+      guard token == generation, !demo else { return nil }
+      await classify(id: item.id)
+      retroProgress = ("Classifying", index + 1, targets.count)
+    }
+    return RetroactivePlan.make(communications, policy: policy)
+  }
+  /// Step 2: applies a previewed plan. Entries whose score changed since the preview are skipped.
+  func applyRetroactive(_ plan: RetroactivePlan) async -> String {
+    guard !demo else { return "Switch to the live workspace first." }
+    let token = generation
+    func current(_ entry: RetroactivePlan.Entry) -> Int? {
+      guard let item = communications.first(where: { $0.id == entry.id }), !item.trashed,
+        item.classification?.level == entry.level
+      else { return nil }
+      return communications.firstIndex { $0.id == entry.id }
+    }
+    let actions = plan.actions
+    retroProgress = ("Applying", 0, actions.count)
+    defer { retroProgress = nil }
+    var quarantined = 0
+    var trashed = 0
+    var failures: [String] = []
+    for entry in actions where entry.disposition == .quarantine {
+      guard let index = current(entry) else { continue }
+      communications[index].quarantined = true
+      ledger.quarantinedIDs.insert(entry.id)
+      quarantined += 1
+    }
+    persistLedger()
+    retroProgress = ("Applying", quarantined, actions.count)
+    // OP5 can never be deleted, whatever a stored rule says.
+    let deletes = actions.filter { $0.disposition == .delete && $0.level != 5 && current($0) != nil }
+      .map(\.id)
+    var groups: [String: [String]] = [:]
+    for id in deletes {
+      let key = id.hasPrefix("imap:") ? String(id.split(separator: ":")[1]) : IntakeLedger.appleMail
+      groups[key, default: []].append(id)
+    }
+    for (key, ids) in groups {
+      guard token == generation, !demo else { break }
+      do {
+        if key == IntakeLedger.appleMail {
+          for id in ids { try await mail.trash(id: id) }
+        } else {
+          guard let account = accounts.first(where: { $0.id == key }),
+            let password = password(for: account)
+          else { throw IntegrationError.message("account is no longer configured") }
+          try await IMAPMailSource.trash(account, password: password, ids: ids)
+        }
+        for id in ids {
+          if let index = communications.firstIndex(where: { $0.id == id }) {
+            communications[index].trashed = true
+          }
+        }
+        trashed += ids.count
+      } catch {
+        let name = accounts.first { $0.id == key }?.title ?? "Apple Mail"
+        failures.append("\(name): \(error.localizedDescription)")
+      }
+      retroProgress = ("Applying", quarantined + trashed, actions.count)
+    }
+    let summary =
+      "Applied rules to existing mail · \(quarantined) quarantined · \(trashed) moved to Trash"
+      + (failures.isEmpty ? "" : " · kept after errors: \(failures.joined(separator: "; "))")
+    status = summary
+    return summary
   }
   func correctScore(_ id: String, level: Int) {
     guard let index = communications.firstIndex(where: { $0.id == id }) else { return }

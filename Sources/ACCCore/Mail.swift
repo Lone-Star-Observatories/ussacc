@@ -404,6 +404,11 @@ public actor IMAPSession {
   }
   /// Moves one message to Trash. Without MOVE it copies and flags \Deleted but never expunges.
   public func moveToTrash(uid: UInt32, uidValidity: UInt32) async throws {
+    try await moveToTrash(uids: [uid], uidValidity: uidValidity)
+  }
+  /// Moves messages to Trash in one command. Without MOVE it copies and flags \Deleted, never expunging.
+  public func moveToTrash(uids: [UInt32], uidValidity: UInt32) async throws {
+    guard !uids.isEmpty else { return }
     guard let trash = try await trashMailbox() else {
       throw IMAPError.server("No Trash mailbox found on this account; message kept.")
     }
@@ -415,11 +420,12 @@ public actor IMAPSession {
     if let validity, validity != uidValidity {
       throw IMAPError.server("Mailbox changed since this message was read; message kept.")
     }
-    var parts: [Part] = [.text(capabilities.contains("MOVE") ? "UID MOVE \(uid) " : "UID COPY \(uid) ")]
+    let set = uids.map(String.init).joined(separator: ",")
+    var parts: [Part] = [.text(capabilities.contains("MOVE") ? "UID MOVE \(set) " : "UID COPY \(set) ")]
     parts += Self.astring(trash)
     try await command(parts)
     if !capabilities.contains("MOVE") {
-      try await command("UID STORE \(uid) +FLAGS.SILENT (\\Deleted)")
+      try await command("UID STORE \(set) +FLAGS.SILENT (\\Deleted)")
     }
   }
   public func logout() async {

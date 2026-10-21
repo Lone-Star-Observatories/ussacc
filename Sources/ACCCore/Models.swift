@@ -131,6 +131,34 @@ public struct PolicyDecision: Equatable, Sendable {
   }
 }
 
+/// Explicit, previewed application of the saved rules to mail that has already arrived.
+/// Unlike automatic intake it runs whether or not automatic filtering is enabled, but keeps the
+/// same invariants: OP5 and unscored items are kept, and nothing is notified.
+public struct RetroactivePlan: Equatable, Sendable {
+  public struct Entry: Equatable, Sendable {
+    public var id: String
+    public var level: Int?
+    public var disposition: Disposition
+  }
+  public var entries: [Entry]
+  public static func make(_ items: [Communication], policy: FilterPolicy) -> RetroactivePlan {
+    var active = policy
+    active.enabled = true
+    return RetroactivePlan(
+      entries: items.filter { !$0.isDemo && !$0.trashed }.map { item in
+        var disposition = PolicyDecision.evaluate(item, policy: active).disposition
+        // Already quarantined mail needs no further quarantine action.
+        if disposition == .quarantine && item.quarantined { disposition = .keep }
+        return Entry(id: item.id, level: item.classification?.level, disposition: disposition)
+      })
+  }
+  public func count(_ disposition: Disposition) -> Int {
+    entries.filter { $0.disposition == disposition }.count
+  }
+  public func count(level: Int?) -> Int { entries.filter { $0.level == level }.count }
+  public var actions: [Entry] { entries.filter { $0.disposition != .keep } }
+}
+
 public enum Transport: String, Codable, CaseIterable, Sendable {
   case air = "Air"
   case taxi = "Taxi"
