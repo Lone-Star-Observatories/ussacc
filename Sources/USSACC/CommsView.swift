@@ -95,11 +95,23 @@ struct CommsView: View {
       }
       Spacer(minLength: 0)
       if !model.demo {
-        Text("Apple Mail inbox is supported. Messages and calls use system handoff.")
-          .font(.acc(15)).foregroundStyle(Color.accDim)
-        ACCButton(
-          title: model.mailConnected ? "REFRESH MAIL" : "CONNECT APPLE MAIL", symbol: "envelope"
-        ) { Task { await model.connectMail() } }.disabled(model.busy)
+        let sources = model.accounts.filter(\.enabled).count + (model.mailConnected ? 1 : 0)
+        Text(
+          sources == 0
+            ? "No mail accounts connected. Add Gmail, IMAP, or import from Apple Mail."
+            : "\(sources) mail source\(sources == 1 ? "" : "s") · checked every 60 seconds"
+        ).font(.acc(15)).foregroundStyle(Color.accDim)
+        HStack(spacing: 10) {
+          ACCButton(title: "MAIL ACCOUNTS", symbol: "person.crop.circle.badge.plus", kind: .outline) {
+            model.station = .dev
+            model.settings = true
+            model.settingsSection = "Connections"
+          }
+          if sources > 0 {
+            ACCButton(title: "REFRESH", symbol: "arrow.clockwise") { Task { await model.refreshMail() } }
+              .disabled(model.busy)
+          }
+        }
       }
       ACCSegmented(
         options: [("INBOX", false), ("QUARANTINE", true)], selection: $quarantine, height: 38)

@@ -20,6 +20,25 @@ import SwiftUI
       NSApplication.shared.terminate(nil)
       return
     }
+    if let index = arguments.firstIndex(of: "--probe-imap"), arguments.indices.contains(index + 1) {
+      // Checks TLS, greeting, capabilities and error handling with a deliberately invalid login.
+      let host = arguments[index + 1]
+      let transport = NetworkIMAPTransport(host: host, port: 993)
+      do {
+        try await transport.open()
+        let session = IMAPSession(transport: transport)
+        try await session.greeting()
+        print("IMAP: TLS + greeting OK from \(host)")
+        print("IMAP: capabilities \(await session.capabilities.sorted().prefix(12).joined(separator: " "))")
+        do {
+          try await session.login(user: "probe@invalid.example", password: "not-a-password")
+          print("IMAP: unexpected login success")
+        } catch { print("IMAP: invalid login rejected as expected: \(error.localizedDescription)") }
+        await session.logout()
+      } catch { print("IMAP: probe failed: \(error.localizedDescription)") }
+      NSApplication.shared.terminate(nil)
+      return
+    }
     if arguments.contains("--check-terminal") {
       let marker = "/private/tmp/ussacc-pty-" + UUID().uuidString
       let session = ShellSession(directory: "/private/tmp")
@@ -62,9 +81,14 @@ import SwiftUI
       }
       model.station = .dev
       model.settings = true
+      model.settingsSection = "Spam Filter"
       try await Task.sleep(for: .milliseconds(650))
       try capture(window: window, to: folder.appendingPathComponent("settings.png"))
-      print("Rendered six USS ACC previews to \(folder.path)")
+      model.settingsSection = "Connections"
+      try await Task.sleep(for: .milliseconds(650))
+      try capture(window: window, to: folder.appendingPathComponent("connections.png"))
+      model.settingsSection = "Spam Filter"
+      print("Rendered seven USS ACC previews to \(folder.path)")
       NSApplication.shared.terminate(nil)
     } catch {
       fputs("Preview export failed: \(error)\n", stderr)

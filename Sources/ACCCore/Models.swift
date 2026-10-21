@@ -250,17 +250,35 @@ public enum LocalPersistence {
 }
 
 /// Durable identifiers prevent reconnecting from reapplying destructive rules to old mail.
+/// Each source (Apple Mail, or one IMAP mailbox generation) gets its own first-sight baseline,
+/// so adding an account never treats its existing mail as new arrivals.
 public struct IntakeLedger: Codable, Equatable, Sendable {
+  public static let appleMail = "applemail"
   public var baselineEstablished = false
+  public var baselinedSources: Set<String> = []
   public var seenIDs: Set<String> = []
   public var quarantinedIDs: Set<String> = []
   public var classifications: [String: Classification] = [:]
   public init() {}
-  public mutating func receive(_ ids: [String]) -> Set<String> {
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    baselineEstablished = try c.decodeIfPresent(Bool.self, forKey: .baselineEstablished) ?? false
+    baselinedSources = try c.decodeIfPresent(Set<String>.self, forKey: .baselinedSources) ?? []
+    seenIDs = try c.decodeIfPresent(Set<String>.self, forKey: .seenIDs) ?? []
+    quarantinedIDs = try c.decodeIfPresent(Set<String>.self, forKey: .quarantinedIDs) ?? []
+    classifications =
+      try c.decodeIfPresent([String: Classification].self, forKey: .classifications) ?? [:]
+    // Ledgers written before multi-account support baselined Apple Mail only.
+    if baselineEstablished { baselinedSources.insert(Self.appleMail) }
+  }
+  public mutating func receive(_ ids: [String], source: String = IntakeLedger.appleMail)
+    -> Set<String>
+  {
     let incoming = Set(ids)
-    let arrivals = baselineEstablished ? incoming.subtracting(seenIDs) : []
+    let arrivals = baselinedSources.contains(source) ? incoming.subtracting(seenIDs) : []
     seenIDs.formUnion(incoming)
-    baselineEstablished = true
+    baselinedSources.insert(source)
+    if source == Self.appleMail { baselineEstablished = true }
     return arrivals
   }
 }

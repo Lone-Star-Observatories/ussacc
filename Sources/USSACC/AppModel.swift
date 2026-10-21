@@ -38,15 +38,23 @@ enum Station: String, CaseIterable, Identifiable {
   @Published var policy = FilterPolicy()
   @Published var status = "Demo workspace · no accounts connected"
   @Published var calendarStatus = "Calendar not connected"
+  /// Apple Mail automation is active (opt-in per session).
   @Published var mailConnected = false
+  @Published var accounts: [MailAccount] = []
+  /// Latest per-account result, keyed by account id ("applemail" for Apple Mail).
+  @Published var accountStatus: [String: String] = [:]
   @Published var busy = false
   @Published var selectedIdentity: String?
   @Published var selectedEventID: String?
   @Published var settings = false
+  @Published var settingsSection = "Spam Filter"
   @Published var modelStatus = Intelligence.availability
   private let calendar = CalendarAdapter()
   private let mail = MailAdapter()
   private var mailTask: Task<Void, Never>?
+  private var appleMailEnabled = false
+  /// Keychain reads are cached for the session to avoid repeated access prompts.
+  private var passwords: [String: String] = [:]
   private var refreshBusy = false
   private var ledger = IntakeLedger()
   private var generation = 0
@@ -64,6 +72,9 @@ enum Station: String, CaseIterable, Identifiable {
     {
       ledger = saved
     }
+    accounts =
+      (try? LocalPersistence.load(
+        [MailAccount].self, from: folder.appendingPathComponent("accounts.json"))) ?? []
     loadDemo()
   }
   func loadDemo() {
@@ -71,6 +82,7 @@ enum Station: String, CaseIterable, Identifiable {
     mailTask?.cancel()
     mailTask = nil
     mailConnected = false
+    appleMailEnabled = false
     demo = true
     let now = Date()
     let day = Calendar.current.startOfDay(for: now)
@@ -172,6 +184,11 @@ enum Station: String, CaseIterable, Identifiable {
         [JourneyLeg].self, from: folder.appendingPathComponent("journeys.json"))) ?? []
     status = "Live workspace · connect accounts in DEV → Settings"
     calendarStatus = "Calendar not connected"
+    appleMailEnabled = false
+    if accounts.contains(where: \.enabled) {
+      startPolling()
+      Task { await refreshMail() }
+    }
   }
   func connectCalendar() async {
     if demo { useLive() }
@@ -227,11 +244,16 @@ enum Station: String, CaseIterable, Identifiable {
       }
     } catch { status = "Unable to save rules: \(error.localizedDescription)" }
   }
+  /// Turns on Apple Mail automation and starts polling every connected source.
   func connectMail() async {
     if demo { useLive() }
+    appleMailEnabled = true
     await refreshMail()
-    guard !demo, mailConnected else { return }
-    mailTask?.cancel()
+    guard !demo else { return }
+    startPolling()
+  }
+  private func startPolling() {
+    guard mailTask == nil else { return }
     mailTask = Task { [weak self] in
       while !Task.isCancelled {
         do { try await Task.sleep(for: .seconds(60)) } catch { break }
@@ -241,11 +263,77 @@ enum Station: String, CaseIterable, Identifiable {
     }
   }
   func disconnectMail() {
-    generation += 1
-    mailTask?.cancel()
-    mailTask = nil
+    appleMailEnabled = false
     mailConnected = false
-    status = "Mail monitoring disconnected."
+    accountStatus[IntakeLedger.appleMail] = nil
+    if !accounts.contains(where: \.enabled) {
+      generation += 1
+      mailTask?.cancel()
+      mailTask = nil
+    }
+    status = "Apple Mail monitoring disconnected."
+  }
+  // MARK: Accounts
+  func password(for account: MailAccount) -> String? {
+    if let cached = passwords[account.id] { return cached }
+    let value = MailKeychain.password(for: account.id)
+    passwords[account.id] = value
+    return value
+  }
+  func hasPassword(_ account: MailAccount) -> Bool { password(for: account) != nil }
+  func testAccount(_ account: MailAccount, password: String) async -> String {
+    if let problem = account.validationError { return problem }
+    do { return try await IMAPMailSource.test(account, password: password) } catch {
+      return error.localizedDescription
+    }
+  }
+  /// Saves settings to accounts.json and the password (when given) to the Keychain.
+  func saveAccount(_ account: MailAccount, password: String?) {
+    do {
+      if let password, !password.isEmpty {
+        try MailKeychain.save(password, for: account.id)
+        passwords[account.id] = password
+      }
+      if let index = accounts.firstIndex(where: { $0.id == account.id }) {
+        accounts[index] = account
+      } else {
+        accounts.append(account)
+      }
+      try persistAccounts()
+      status = "\(account.title) saved."
+      if demo { useLive() } else if account.enabled {
+        startPolling()
+        Task { await refreshMail() }
+      }
+    } catch { status = "Unable to save account: \(error.localizedDescription)" }
+  }
+  func removeAccount(_ id: String) {
+    MailKeychain.delete(for: id)
+    passwords[id] = nil
+    accounts.removeAll { $0.id == id }
+    accountStatus[id] = nil
+    communications.removeAll { $0.id.hasPrefix("imap:\(id):") }
+    try? persistAccounts()
+    status = "Account removed. Its password was deleted from the Keychain."
+  }
+  /// Apple Mail accounts not already configured here. Nothing is saved until the user adds them.
+  func appleMailAccounts() async throws -> [MailAccount] {
+    let known = Set(accounts.map { $0.email.lowercased() })
+    return try AppleMailAccountImport.accounts().filter { !known.contains($0.email.lowercased()) }
+  }
+  private func persistAccounts() throws {
+    try LocalPersistence.save(accounts, to: folder.appendingPathComponent("accounts.json"))
+  }
+  private func trash(_ id: String) async throws {
+    if id.hasPrefix("imap:") {
+      let accountID = id.split(separator: ":").dropFirst().first.map(String.init)
+      guard let account = accounts.first(where: { $0.id == accountID }),
+        let password = password(for: account)
+      else { throw IntegrationError.message("Account for this message is no longer configured.") }
+      try await IMAPMailSource.trash(account, password: password, id: id)
+    } else {
+      try await mail.trash(id: id)
+    }
   }
   func refreshMail() async {
     guard !demo, !refreshBusy else { return }
@@ -256,12 +344,38 @@ enum Station: String, CaseIterable, Identifiable {
       busy = false
     }
     let token = generation
-    do {
-      let fetched = try await mail.fetch()
+    var batches: [(source: String, items: [Communication])] = []
+    var failures: [String] = []
+    if appleMailEnabled {
+      do {
+        let items = try await mail.fetch()
+        batches.append((IntakeLedger.appleMail, items))
+        mailConnected = true
+        accountStatus[IntakeLedger.appleMail] = "Checked \(Date.now.accClock()) · \(items.count) recent"
+      } catch {
+        accountStatus[IntakeLedger.appleMail] = error.localizedDescription
+        failures.append("Apple Mail")
+      }
+    }
+    for account in accounts where account.enabled {
+      guard let password = password(for: account) else {
+        accountStatus[account.id] = "Needs password"
+        continue
+      }
+      do {
+        let batch = try await IMAPMailSource.fetch(account, password: password)
+        batches.append(batch)
+        accountStatus[account.id] = "Checked \(Date.now.accClock()) · \(batch.items.count) recent"
+      } catch {
+        accountStatus[account.id] = error.localizedDescription
+        failures.append(account.title)
+      }
       guard token == generation, !demo, !Task.isCancelled else { return }
-      mailConnected = true
+    }
+    guard token == generation, !demo, !Task.isCancelled else { return }
+    for (source, fetched) in batches {
       let existing = Set(communications.map(\.id))
-      let arrivals = ledger.receive(fetched.map(\.id))
+      let arrivals = ledger.receive(fetched.map(\.id), source: source)
       persistLedger()
       communications += fetched.filter { !existing.contains($0.id) }.map { item in
         var item = item
@@ -275,11 +389,15 @@ enum Station: String, CaseIterable, Identifiable {
         if policy.enabled { await classify(id: item.id, applyActions: true, token: token) }
         guard token == generation else { return }
       }
-      communications.sort { $0.date > $1.date }
-      if selectedIdentity == nil { selectedIdentity = communications.first?.identity }
-      status =
-        "Mail connected · checked \(Date.now.formatted(date: .omitted, time: .shortened)) · latest 40 inbox items"
-    } catch { status = error.localizedDescription }
+    }
+    communications.sort { $0.date > $1.date }
+    if selectedIdentity == nil { selectedIdentity = communications.first?.identity }
+    let sources = batches.count
+    status =
+      sources == 0 && failures.isEmpty
+      ? "No mail sources connected · add accounts in DEV → Settings → Connections"
+      : "Mail checked \(Date.now.accClock()) · \(sources) source\(sources == 1 ? "" : "s")"
+        + (failures.isEmpty ? "" : " · failed: \(failures.joined(separator: ", "))")
   }
   func classify(id: String, applyActions: Bool = false, token: Int? = nil) async {
     guard let item = communications.first(where: { $0.id == id }) else { return }
@@ -305,7 +423,7 @@ enum Station: String, CaseIterable, Identifiable {
         ledger.quarantinedIDs.insert(id)
         persistLedger()
       case .delete:
-        try await mail.trash(id: id)
+        try await trash(id)
         guard context == generation, let fresh = communications.firstIndex(where: { $0.id == id })
         else { return }
         communications[fresh].trashed = true

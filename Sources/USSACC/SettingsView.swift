@@ -35,13 +35,18 @@ struct DevView: View {
 }
 struct SettingsView: View {
   @EnvironmentObject private var model: AppModel
-  @State private var section = "Spam Filter"
+  private var section: String {
+    get { model.settingsSection }
+    nonmutating set { model.settingsSection = newValue }
+  }
   @State private var draft = FilterPolicy()
   @State private var known = ""
   @State private var sample = "Can you confirm tonight?"
   @State private var sampleKnown = true
   @State private var testResult = ""
   @State private var testing = false
+  @State private var editing: AccountDraft?
+  @State private var importing = false
   var body: some View {
     ACCPanel(padding: 12) {
       HStack(alignment: .top, spacing: 18) {
@@ -151,7 +156,7 @@ struct SettingsView: View {
               .lineLimit(2).frame(maxWidth: 220, alignment: .leading).textSelection(.enabled)
           }
           Toggle(isOn: $draft.enabled) {
-            Text("Classify new Apple Mail arrivals").font(.acc(18))
+            Text("Classify new mail arrivals").font(.acc(18))
           }.toggleStyle(ACCCheckboxStyle())
         }.padding(.top, 8)
       }
@@ -180,7 +185,7 @@ struct SettingsView: View {
         }
         ACCDivider()
         Text(
-          "OP5 is always kept. Delete is off until you configure it and moves Apple Mail messages to Trash; Quarantine hides them in USS ACC only."
+          "OP5 is always kept. Delete is off until you configure it and moves mail to the account's Trash; Quarantine hides it in USS ACC only."
         ).font(.acc(17)).foregroundStyle(Color.accText).frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 12).padding(.vertical, 10)
       }.background(Color.black, in: RoundedRectangle(cornerRadius: 12))
@@ -246,25 +251,67 @@ struct SettingsView: View {
       .opacity(level == 5 ? 0.6 : 1).accessibilityLabel("OP\(level) disposition")
   }
   var connections: some View {
-    VStack(alignment: .leading, spacing: 22) {
-      Text("CONNECTIONS").font(.lcars(60)).foregroundStyle(Color.accPeach)
-      Text("Apple Mail").font(.lcars(24)).foregroundStyle(Color.accLavender)
-      Text(
-        "Opt-in AppleScript automation reads the latest 40 inbox items every 60 seconds while USS ACC runs. Message bodies stay in memory. macOS will ask for permission."
-      ).font(.acc(19)).foregroundStyle(Color.accDim)
-      HStack {
-        ACCButton(
-          title: model.mailConnected ? "REFRESH MAIL" : "CONNECT MAIL", symbol: "envelope",
-          primary: true
-        ) { Task { await model.connectMail() } }.disabled(model.busy)
-        if model.mailConnected { ACCButton(title: "DISCONNECT", kind: .outline) { model.disconnectMail() } }
+    VStack(alignment: .leading, spacing: 18) {
+      VStack(alignment: .leading, spacing: -2) {
+        Text("CONNECTIONS").font(.lcars(54)).foregroundStyle(Color.accPeach)
+        Text("Mail accounts, calendar, and on-device intelligence").font(.acc(24, weight: .medium))
+          .foregroundStyle(Color.accLavender)
       }
+      HStack(spacing: 10) {
+        ACCButton(title: "ADD GMAIL", symbol: "envelope.badge", primary: true) {
+          editing = AccountDraft(account: MailAccount(provider: .gmail, email: ""), isNew: true)
+        }.fixedSize()
+        ACCButton(title: "ADD IMAP ACCOUNT", symbol: "server.rack") {
+          editing = AccountDraft(account: MailAccount(provider: .imap, email: ""), isNew: true)
+        }.fixedSize()
+        ACCButton(title: "IMPORT FROM APPLE MAIL", symbol: "square.and.arrow.down", kind: .outline) {
+          importing = true
+        }.fixedSize()
+      }
+      VStack(spacing: 0) {
+        accountRow(
+          symbol: "envelope.open", title: "Apple Mail", detail: "Automation · inbox of every Mail account",
+          status: model.accountStatus[IntakeLedger.appleMail]
+            ?? (model.mailConnected ? "Connected" : "Not connected")
+        ) {
+          if model.mailConnected {
+            ACCButton(title: "DISCONNECT", kind: .outline, size: 16, height: 38) { model.disconnectMail() }
+              .fixedSize()
+          } else {
+            ACCButton(title: "CONNECT", size: 16, height: 38) { Task { await model.connectMail() } }
+              .fixedSize().disabled(model.busy)
+          }
+        }
+        ForEach(model.accounts) { account in
+          ACCDivider()
+          accountRow(
+            symbol: account.provider == .gmail ? "envelope.badge" : "server.rack",
+            title: account.title,
+            detail: "\(account.provider.title) · \(account.host):\(account.port)"
+              + (account.importedFromAppleMail ? " · imported" : ""),
+            status: !account.enabled
+              ? "Paused"
+              : model.hasPassword(account)
+                ? (model.accountStatus[account.id] ?? "Waiting for first check") : "Needs password"
+          ) {
+            ACCButton(title: "EDIT", kind: .outline, size: 16, height: 38) {
+              editing = AccountDraft(account: account, isNew: false)
+            }.fixedSize()
+            Button("REMOVE") { model.removeAccount(account.id) }.buttonStyle(.plain)
+              .font(.lcars(16)).foregroundStyle(Color.accPeach)
+          }
+        }
+      }.background(Color.black, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accBorder, lineWidth: 1.2))
+      Text(
+        "Accounts are checked every 60 seconds while USS ACC runs (newest 40 Inbox messages, read without marking them read). Passwords are stored in your login Keychain. Delete rules move mail to the account's Trash and never expunge."
+      ).font(.acc(16)).foregroundStyle(Color.accDim)
       ACCDivider()
       Text("Calendar").font(.lcars(24)).foregroundStyle(Color.accLavender)
       Text(model.calendarStatus).font(.acc(16))
       ACCButton(title: "CONNECT CALENDAR", symbol: "calendar") {
         Task { await model.connectCalendar() }
-      }
+      }.fixedSize()
       Text(
         "Reads the next 60 days. Calendar invitations can be imported into NAV as unconfirmed itinerary legs."
       ).font(.acc(16)).foregroundStyle(Color.accDim)
@@ -277,8 +324,39 @@ struct SettingsView: View {
       Text(model.modelStatus).font(.acc(16))
       ACCButton(title: "REFRESH MODEL STATUS", symbol: "arrow.clockwise", kind: .outline) {
         model.modelStatus = Intelligence.availability
-      }
+      }.fixedSize()
+    }.sheet(item: $editing) { draft in
+      AccountEditor(draft: draft).environmentObject(model)
+    }.sheet(isPresented: $importing) {
+      AppleMailImportSheet { picked in
+        importing = false
+        guard let first = picked.first else { return }
+        // Let the import sheet finish dismissing before presenting the editor.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+          editing = AccountDraft(account: first, isNew: true, queue: Array(picked.dropFirst()))
+        }
+      }.environmentObject(model)
     }
+  }
+  func accountRow<Actions: View>(
+    symbol: String, title: String, detail: String, status: String,
+    @ViewBuilder actions: () -> Actions
+  ) -> some View {
+    HStack(spacing: 18) {
+      Image(systemName: symbol).font(.system(size: 24, weight: .medium)).foregroundStyle(
+        Color.accLavender
+      ).frame(width: 34)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title).font(.acc(22, weight: .medium)).lineLimit(1)
+        Text(detail).font(.acc(16)).foregroundStyle(Color.accDim).lineLimit(1)
+        Text(status).font(.acc(16)).foregroundStyle(
+          status.hasPrefix("Checked") || status.hasPrefix("Connected")
+            ? Color.accGreen : status == "Needs password" ? Color.accPeach : Color.accLavender
+        ).lineLimit(2)
+      }
+      Spacer(minLength: 10)
+      actions()
+    }.padding(.horizontal, 18).padding(.vertical, 12)
   }
   var notifications: some View {
     VStack(alignment: .leading, spacing: 20) {
@@ -335,5 +413,176 @@ struct ACCCheckboxStyle: ToggleStyle {
         configuration.label
       }.contentShape(Rectangle())
     }.buttonStyle(.plain).accessibilityAddTraits(configuration.isOn ? .isSelected : [])
+  }
+}
+
+struct AccountDraft: Identifiable {
+  let id = UUID()
+  var account: MailAccount
+  var isNew: Bool
+  /// Further imported accounts to review after this one.
+  var queue: [MailAccount] = []
+}
+
+struct AccountEditor: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var model: AppModel
+  @State var draft: AccountDraft
+  @State private var password = ""
+  @State private var result = ""
+  @State private var testing = false
+  @State private var port = "993"
+  var account: MailAccount { draft.account }
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text(draft.isNew ? "ADD MAIL ACCOUNT" : "EDIT MAIL ACCOUNT").font(.lcars(34))
+        .foregroundStyle(Color.accPeach)
+      if !draft.queue.isEmpty {
+        Text("\(draft.queue.count) more imported account\(draft.queue.count == 1 ? "" : "s") after this one")
+          .font(.acc(16)).foregroundStyle(Color.accLavender)
+      }
+      Picker("Provider", selection: Binding(
+        get: { account.provider },
+        set: { provider in
+          draft.account.provider = provider
+          if let host = provider.host { draft.account.host = host }
+          draft.account.port = 993
+          port = "993"
+        })
+      ) {
+        ForEach(MailProvider.allCases, id: \.self) { Text($0.title).tag($0) }
+      }.pickerStyle(.segmented)
+      Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 10) {
+        field("Email", text: Binding(
+          get: { account.email },
+          set: { value in
+            let followUser = draft.account.username.isEmpty || draft.account.username == draft.account.email
+            draft.account.email = value.trimmingCharacters(in: .whitespaces)
+            if followUser { draft.account.username = draft.account.email }
+          }))
+        field("Display name", text: $draft.account.name, prompt: "Optional")
+        field("Username", text: $draft.account.username)
+        if account.provider == .imap {
+          field("IMAP server", text: $draft.account.host, prompt: "imap.example.com")
+          field("TLS port", text: Binding(
+            get: { port },
+            set: { port = $0; draft.account.port = Int($0) ?? 0 }))
+        }
+        GridRow {
+          Text("Password").font(.acc(18)).gridColumnAlignment(.trailing)
+          SecureField(
+            draft.isNew || !model.hasPassword(account) ? "App password" : "Leave blank to keep saved password",
+            text: $password
+          ).textFieldStyle(.roundedBorder).font(.acc(18))
+        }
+      }
+      HStack(alignment: .top, spacing: 8) {
+        Image(systemName: "key.fill").foregroundStyle(Color.accLavender)
+        Text(account.provider.passwordHelp).font(.acc(16)).foregroundStyle(Color.accDim)
+        if let url = account.provider.passwordURL {
+          Link("Open", destination: url).font(.lcars(16))
+        }
+      }
+      Toggle(isOn: $draft.account.enabled) { Text("Check this account").font(.acc(18)) }
+        .toggleStyle(ACCCheckboxStyle())
+      if !result.isEmpty {
+        Text(result).font(.acc(17)).foregroundStyle(
+          result.hasPrefix("Connected") ? Color.accGreen : Color.accPeach
+        ).textSelection(.enabled)
+      }
+      HStack {
+        Button(draft.queue.isEmpty ? "Cancel" : "Skip") { advance() }.buttonStyle(.plain)
+          .font(.lcars(18)).foregroundStyle(Color.accLavender)
+        Spacer()
+        ACCButton(title: testing ? "TESTING…" : "TEST CONNECTION", symbol: "bolt.horizontal", kind: .outline) {
+          testing = true
+          result = ""
+          Task {
+            result = await model.testAccount(account, password: effectivePassword)
+            testing = false
+          }
+        }.fixedSize().disabled(testing || effectivePassword.isEmpty || account.validationError != nil)
+        ACCButton(title: "SAVE", primary: true) {
+          model.saveAccount(account, password: password.isEmpty ? nil : password)
+          advance()
+        }.fixedSize().disabled(account.validationError != nil || (draft.isNew && password.isEmpty && !model.hasPassword(account)))
+      }
+      if let problem = account.validationError, !account.email.isEmpty {
+        Text(problem).font(.acc(15)).foregroundStyle(Color.accPeach)
+      }
+    }.padding(28).frame(width: 640).background(Color.black).preferredColorScheme(.dark)
+      .onAppear { port = String(account.port) }
+  }
+  var effectivePassword: String { password.isEmpty ? (model.password(for: account) ?? "") : password }
+  func field(_ label: String, text: Binding<String>, prompt: String = "") -> some View {
+    GridRow {
+      Text(label).font(.acc(18)).gridColumnAlignment(.trailing)
+      TextField(prompt.isEmpty ? label : prompt, text: text).textFieldStyle(.roundedBorder)
+        .font(.acc(18)).autocorrectionDisabled()
+    }
+  }
+  func advance() {
+    if let next = draft.queue.first {
+      draft = AccountDraft(account: next, isNew: true, queue: Array(draft.queue.dropFirst()))
+      password = ""
+      result = ""
+      port = String(next.port)
+    } else {
+      dismiss()
+    }
+  }
+}
+
+struct AppleMailImportSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var model: AppModel
+  let onImport: ([MailAccount]) -> Void
+  @State private var found: [MailAccount] = []
+  @State private var selected: Set<String> = []
+  @State private var message = "Reading accounts from Apple Mail…"
+  @State private var loading = true
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      Text("IMPORT FROM APPLE MAIL").font(.lcars(34)).foregroundStyle(Color.accPeach)
+      Text(
+        "Server settings are copied from Mail. Mail does not share passwords, so you'll enter an app password for each account next."
+      ).font(.acc(17)).foregroundStyle(Color.accDim)
+      if loading {
+        ProgressView().controlSize(.small)
+      }
+      ForEach(found) { account in
+        Toggle(isOn: Binding(
+          get: { selected.contains(account.id) },
+          set: { on in if on { selected.insert(account.id) } else { selected.remove(account.id) } })
+        ) {
+          VStack(alignment: .leading, spacing: 1) {
+            Text(account.title).font(.acc(20, weight: .medium))
+            Text("\(account.provider.title) · \(account.email) · \(account.host):\(account.port)")
+              .font(.acc(15)).foregroundStyle(Color.accDim)
+          }
+        }.toggleStyle(ACCCheckboxStyle())
+      }
+      if !loading && found.isEmpty {
+        Text(message).font(.acc(17)).foregroundStyle(Color.accLavender)
+      }
+      HStack {
+        Button("Cancel") { dismiss() }.buttonStyle(.plain).font(.lcars(18))
+          .foregroundStyle(Color.accLavender)
+        Spacer()
+        ACCButton(title: "CONTINUE", primary: true) {
+          onImport(found.filter { selected.contains($0.id) })
+        }.fixedSize().disabled(selected.isEmpty)
+      }
+    }.padding(28).frame(width: 600).background(Color.black).preferredColorScheme(.dark)
+      .task {
+        do {
+          found = try await model.appleMailAccounts()
+          selected = Set(found.map(\.id))
+          message = "No IMAP, Gmail, or iCloud accounts found in Apple Mail that aren't already added. POP and Exchange accounts aren't supported."
+        } catch {
+          message = "Couldn't read Apple Mail: \(error.localizedDescription) Allow USS ACC under System Settings → Privacy & Security → Automation."
+        }
+        loading = false
+      }
   }
 }
