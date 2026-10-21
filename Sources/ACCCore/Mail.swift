@@ -330,7 +330,7 @@ public actor IMAPSession {
       throw IMAPError.server(Self.message(response, skip: 2) ?? "\(status ?? "BAD") response.")
     }
   }
-  public func command(_ text: String) async throws -> [[IMAPValue]] {
+  @discardableResult public func command(_ text: String) async throws -> [[IMAPValue]] {
     try await command([.text(text)])
   }
   public func login(user: String, password: String) async throws {
