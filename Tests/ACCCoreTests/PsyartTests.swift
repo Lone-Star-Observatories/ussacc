@@ -61,6 +61,16 @@ struct Synth {
     #expect(Set(draw.countries).count == 5 && Set(draw.places).count == 5)
   }
 
+  @Test func balanceCapsPicksPerArtistAndFillsFromOthers() {
+    let owners = [0, 0, 0, 0, 0, 1, 1, 1, 2, 2]
+    let chosen = PsyartCatalog.balance([0, 1, 2, 3, 4], owners: owners, count: 5, perOwner: 2)
+    #expect(chosen.count == 5)
+    #expect(chosen.prefix(2) == [0, 1])
+    let perOwner = Dictionary(grouping: chosen, by: { owners[$0] }).mapValues(\.count)
+    #expect(perOwner.values.allSatisfy { $0 <= 2 } && Set(perOwner.keys) == [0, 1, 2])
+    #expect(PsyartCatalog.balance([], owners: [0, 0], count: 5, perOwner: 2).count == 2)
+  }
+
   @Test func wfmDemodRecoversToneAndOffsetTuning() {
     let (i, q) = Synth.signal(seconds: 0.25, offset: 250e3, tone: 1_000, deviation: 50e3)
     var demod = Demodulator(mode: .wfm, inputRate: Synth.rate, offset: 250e3)

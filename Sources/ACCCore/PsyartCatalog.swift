@@ -140,3 +140,35 @@ public enum PsyartCatalog {
     return draw(using: &generator)
   }
 }
+
+extension PsyartCatalog {
+  /// Keeps the model's preferred order but limits each owner (artist) to `perOwner` picks,
+  /// filling any gap round-robin from owners not yet represented.
+  public static func balance(
+    _ preferred: [Int], owners: [Int], count: Int, perOwner: Int
+  ) -> [Int] {
+    var chosen: [Int] = []
+    var perCount: [Int: Int] = [:]
+    func take(_ index: Int) {
+      guard owners.indices.contains(index), !chosen.contains(index), chosen.count < count,
+        perCount[owners[index], default: 0] < perOwner
+      else { return }
+      chosen.append(index)
+      perCount[owners[index], default: 0] += 1
+    }
+    preferred.forEach(take)
+    // Round-robin over owners, least represented first.
+    var remaining = owners.indices.filter { !chosen.contains($0) }
+    while chosen.count < count, !remaining.isEmpty {
+      let before = chosen.count
+      for owner in Set(owners).sorted(by: { perCount[$0, default: 0] < perCount[$1, default: 0] }) {
+        if let index = remaining.first(where: { owners[$0] == owner }) {
+          take(index)
+          remaining.removeAll { $0 == index }
+        }
+      }
+      if chosen.count == before { break }
+    }
+    return chosen
+  }
+}

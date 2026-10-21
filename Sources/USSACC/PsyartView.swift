@@ -54,35 +54,43 @@ struct PsyartView: View {
   }
 
   func coordinates(_ page: PsyartPage) -> some View {
-    ACCPanel(title: "COORDINATES", subtitle: "Five Earth cultures · five worlds", padding: 16) {
+    ACCPanel(padding: 12) {
       HStack(spacing: 8) {
         ForEach(page.countries) { country in
-          chip(top: country.flag, title: country.name, tag: "EARTH", color: .accPeach)
+          tile(id: country.id, page: page, name: country.name) {
+            Text(country.flag).font(.system(size: 46))
+          }
         }
         ForEach(page.places) { place in
-          chip(
-            symbol: symbol(place.kind), title: place.name,
-            tag: place.trek ? "TREK · \(place.kind.label.uppercased())" : place.kind.label.uppercased(),
-            color: place.trek ? .accLavender : .accGreen)
+          tile(id: place.id, page: page, name: place.name) {
+            if let image = page.info[place.id]?.image {
+              AsyncImage(url: image) { $0.resizable().scaledToFill() } placeholder: { Color.accField }
+                .frame(width: 54, height: 54).clipShape(Circle())
+                .overlay(Circle().stroke(place.trek ? Color.accLavender : Color.accGreen, lineWidth: 1.5))
+            } else {
+              Image(systemName: symbol(place.kind)).font(.system(size: 30, weight: .medium))
+                .foregroundStyle(place.trek ? Color.accLavender : Color.accGreen).frame(height: 54)
+            }
+          }
         }
       }
     }
   }
-  func chip(top: String? = nil, symbol: String? = nil, title: String, tag: String, color: Color)
+  /// Minimal coordinate tile; clicking opens the place's Wikipedia or Memory Alpha record.
+  func tile<Mark: View>(id: String, page: PsyartPage, name: String, @ViewBuilder mark: () -> Mark)
     -> some View
   {
-    VStack(spacing: 6) {
-      if let top { Text(top).font(.system(size: 34)) }
-      if let symbol {
-        Image(systemName: symbol).font(.system(size: 28, weight: .medium)).foregroundStyle(color)
-          .frame(height: 40)
-      }
-      Text(title).font(.acc(17, weight: .medium)).lineLimit(2).multilineTextAlignment(.center)
-      Text(tag).font(.lcars(12)).foregroundStyle(.black).lineLimit(1).padding(.horizontal, 8)
-        .padding(.vertical, 2).background(color, in: Capsule())
-    }.frame(maxWidth: .infinity).padding(.vertical, 10)
-      .background(Color.accCard, in: RoundedRectangle(cornerRadius: 12))
-      .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accBorder, lineWidth: 1))
+    let link = page.info[id]?.link
+    return Button {
+      if let link { NSWorkspace.shared.open(link) }
+    } label: {
+      VStack(spacing: 4) {
+        mark().frame(height: 56)
+        Text(name).font(.acc(13)).foregroundStyle(Color.accDim).lineLimit(1)
+      }.frame(maxWidth: .infinity).padding(.vertical, 8)
+        .background(Color.accCard.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+        .contentShape(RoundedRectangle(cornerRadius: 12))
+    }.buttonStyle(.plain).help(link == nil ? name : "Open \(name) record").disabled(link == nil)
   }
   func symbol(_ kind: CelestialKind) -> String {
     switch kind {
@@ -278,6 +286,11 @@ struct YouTubeKeyEditor: View {
 struct SDRStrip: View {
   @EnvironmentObject private var sdr: SDRController
   @State private var entry = ""
+  /// Only channels the current antenna path can actually pass, strongest first.
+  var receivable: [ChannelCandidate] {
+    sdr.channels.filter { BandPlan.receptionProblem($0.frequency, hamItUp: sdr.hamItUp) == nil }
+      .sorted { $0.snr > $1.snr }
+  }
   var body: some View {
     VStack(spacing: 8) {
       HStack(spacing: 12) {
@@ -331,12 +344,12 @@ struct SDRStrip: View {
         VStack(alignment: .leading, spacing: 2) {
           Text(sdr.audioOn && sdr.online ? sdr.status : (sdr.scanning.isEmpty ? sdr.status : sdr.scanning))
             .font(.acc(14)).foregroundStyle(Color.accText).lineLimit(1)
-          Text("\(sdr.channels.count) channels found · tap to tune").font(.acc(13))
+          Text("\(receivable.count) channels found · tap to tune").font(.acc(13))
             .foregroundStyle(Color.accDim)
         }.frame(width: 230, alignment: .leading)
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 6) {
-            ForEach(sdr.channels.sorted { $0.snr > $1.snr }.prefix(60)) { channel in
+            ForEach(receivable.prefix(60)) { channel in
               Button {
                 sdr.tune(to: channel)
               } label: {

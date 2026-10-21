@@ -13,8 +13,8 @@ import Foundation
     var reading: String
     @Guide(
       description:
-        "Six real recording artists, best first. At least three must be from the listed countries.",
-      .count(6))
+        "Eight real recording artists, best first. At least four must be from the listed countries.",
+      .count(8))
     var artists: [String]
   }
   @available(macOS 26.0, *)
@@ -76,6 +76,11 @@ struct PsyartPage: Codable, Equatable {
   private let file = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("USSACC/psyart.json")
 
+  /// Artists used by recent transmissions; excluded so each one brings new music.
+  private var recentArtists: [String] {
+    get { UserDefaults.standard.stringArray(forKey: "psyart.recentArtists") ?? [] }
+    set { UserDefaults.standard.set(Array(newValue.suffix(60)), forKey: "psyart.recentArtists") }
+  }
   init() { page = try? LocalPersistence.load(PsyartPage.self, from: file) }
 
   func generate() async {
@@ -89,13 +94,17 @@ struct PsyartPage: Codable, Equatable {
     let draw = PsyartCatalog.draw()
     phase = "Coordinates locked · consulting Apple Intelligence"
     do {
-      let mix = try await Self.compose(countries: draw.countries, places: draw.places)
+      let used = Set((recentArtists + (page?.artists.map(\.title) ?? [])).map(ITunes.normalized))
+      let mix = try await Self.compose(
+        countries: draw.countries, places: draw.places, avoid: Array(used).shuffled().prefix(40).map { $0 })
       phase = "Matching artists in Apple Music"
       async let info = Self.placeInfo(countries: draw.countries, places: draw.places)
       // Keep the first three candidate artists that exist in the catalog.
       var artists: [(item: MediaItem, id: Int)] = []
-      for name in mix.artists where artists.count < 3 {
-        if let found = await ITunes.artistRecord(name), !artists.contains(where: { $0.id == found.id }) {
+      for name in mix.artists where artists.count < 3 && !used.contains(ITunes.normalized(name)) {
+        if let found = await ITunes.artistRecord(name), !artists.contains(where: { $0.id == found.id }),
+          !used.contains(ITunes.normalized(found.item.title))
+        {
           artists.append(found)
         }
       }
@@ -105,12 +114,22 @@ struct PsyartPage: Codable, Equatable {
       phase = "Choosing tracks from the artists' catalogs"
       var songs: [MediaItem] = []
       var albums: [MediaItem] = []
-      for artist in artists {
-        songs += await ITunes.lookup(artist.id, entity: "song", limit: 15)
-        albums += await ITunes.lookup(artist.id, entity: "album", limit: 8)
+      var songOwners: [Int] = []
+      var albumOwners: [Int] = []
+      for (owner, artist) in artists.enumerated() {
+        // Sample beyond the most popular tracks so repeat artists still sound different.
+        let artistSongs = (await ITunes.lookup(artist.id, entity: "song", limit: 40)).shuffled().prefix(12)
+        let artistAlbums = (await ITunes.lookup(artist.id, entity: "album", limit: 20)).shuffled().prefix(6)
+        songs += artistSongs
+        albums += artistAlbums
+        songOwners += Array(repeating: owner, count: artistSongs.count)
+        albumOwners += Array(repeating: owner, count: artistAlbums.count)
       }
       let picks = try await Self.pick(reading: mix.reading, songs: songs, albums: albums)
-      let chosenSongs = picks.songs.map { songs[$0] }
+      // At most two songs and one album per artist, so the manifest spans all three.
+      let songIndices = PsyartCatalog.balance(picks.songs, owners: songOwners, count: 5, perOwner: 2)
+      let albumIndices = PsyartCatalog.balance(picks.albums, owners: albumOwners, count: 2, perOwner: 1)
+      let chosenSongs = songIndices.map { songs[$0] }
       let key = MailKeychain.password(for: Self.youtubeAccount)
       phase = "Locating video transmissions"
       let videos = await withTaskGroup(of: (Int, VideoItem).self) { group in
@@ -126,8 +145,9 @@ struct PsyartPage: Codable, Equatable {
       let result = PsyartPage(
         countries: draw.countries, places: draw.places, title: mix.title, tagline: mix.tagline,
         reading: mix.reading, artists: artists.map(\.item), songs: chosenSongs,
-        albums: picks.albums.map { albums[$0] }, videos: videos, info: await info, created: .now)
+        albums: albumIndices.map { albums[$0] }, videos: videos, info: await info, created: .now)
       page = result
+      recentArtists += result.artists.map(\.title)
       try? LocalPersistence.save(result, to: file)
     } catch {
       self.error = error.localizedDescription
@@ -158,7 +178,9 @@ struct PsyartPage: Codable, Equatable {
     var title, tagline, reading: String
     var artists: [String]
   }
-  static func compose(countries: [PsyCountry], places: [CelestialBody]) async throws -> Mix {
+  static func compose(countries: [PsyCountry], places: [CelestialBody], avoid: [String] = [])
+    async throws -> Mix
+  {
     #if canImport(FoundationModels)
       if #available(macOS 26.0, *), SystemLanguageModel.default.isAvailable {
         let session = LanguageModelSession(
@@ -174,7 +196,12 @@ struct PsyartPage: Codable, Equatable {
           + "Destinations: "
           + places.map { "\($0.name) (\($0.kind.label.lowercased()), \($0.trek ? "Star Trek" : "real"))" }
           .joined(separator: ", ") + "."
-        let mix = try await session.respond(to: prompt, generating: GeneratedMix.self).content
+        let avoidance = avoid.isEmpty ? "" : "\nDo not suggest any of these recently used artists: \(avoid.joined(separator: ", "))."
+        // Higher-temperature sampling keeps successive transmissions from converging on the same names.
+        let mix = try await session.respond(
+          to: prompt + avoidance, generating: GeneratedMix.self,
+          options: GenerationOptions(sampling: .random(top: 50), temperature: 1.2)
+        ).content
         return Mix(title: mix.title, tagline: mix.tagline, reading: mix.reading, artists: mix.artists)
       }
     #endif
@@ -359,8 +386,16 @@ enum Wiki {
       let html = ((json["parse"] as? [String: Any])?["text"] as? [String: Any])?["*"] as? String
     else { return nil }
     let paragraphs = matches(#"<p>(.*?)</p>"#, in: html).map(stripHTML).filter { $0.count > 60 }
-    let image = matches(#"src="(https://static\.wikia\.nocookie\.net/[^"]+)""#, in: html).first
-      .flatMap(URL.init)
+    // The page-image API returns the article's lead image; inline <img> tags are often icons.
+    let imageQuery = HTTP.url(
+      "https://memory-alpha.fandom.com/api.php",
+      ["action": "query", "prop": "pageimages", "piprop": "original", "titles": title, "format": "json",
+       "redirects": "1"])
+    let pages = ((await HTTP.json(imageQuery) as? [String: Any])?["query"] as? [String: Any])?["pages"]
+      as? [String: Any]
+    let image = pages?.values.compactMap {
+      (($0 as? [String: Any])?["original"] as? [String: Any])?["source"] as? String
+    }.first.flatMap(URL.init)
     let page = title.replacingOccurrences(of: " ", with: "_")
       .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? title
     return PlaceInfo(
