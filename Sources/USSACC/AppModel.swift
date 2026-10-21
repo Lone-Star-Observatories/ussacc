@@ -7,6 +7,7 @@ enum Station: String, CaseIterable, Identifiable {
   case comms = "COMMS"
   case events = "EVENTS"
   case nav = "NAV"
+  case psyart = "PSYART"
   case dev = "DEV"
   var id: Self { self }
   var symbol: String {
@@ -15,6 +16,7 @@ enum Station: String, CaseIterable, Identifiable {
     case .comms: "message"
     case .events: "calendar"
     case .nav: "location.fill"
+    case .psyart: "paintpalette.fill"
     case .dev: "terminal"
     }
   }
@@ -24,6 +26,7 @@ enum Station: String, CaseIterable, Identifiable {
     case .comms: "Conversations across every channel."
     case .events: "Your time, in view."
     case .nav: "Every leg of the journey."
+    case .psyart: "Culture, psyche, media and arts."
     case .dev: "Tools for building."
     }
   }

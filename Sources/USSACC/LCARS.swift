@@ -225,7 +225,7 @@ struct ControlCenter: View {
       let sideTop: CGFloat = 138
       let bottomBand: CGFloat = 40
       let buttonGap: CGFloat = 8
-      let buttonHeight = min(100, max(64, (h - sideTop - 250) / 5 - buttonGap))
+      let buttonHeight = min(100, max(58, (h - sideTop - 250) / CGFloat(Station.allCases.count) - buttonGap))
       let sideBottom = sideTop + CGFloat(Station.allCases.count) * (buttonHeight + buttonGap)
       let contentX = m + rail + 10
       ZStack(alignment: .topLeading) {
@@ -294,7 +294,7 @@ struct ControlCenter: View {
         header.frame(width: w - 14 - 12, alignment: .trailing).offset(y: 6)
         // Station title + workspace.
         VStack(alignment: .leading, spacing: 14) {
-          if model.station != .dev && model.station != .nav {
+          if ![.dev, .nav, .psyart].contains(model.station) {
             StationTitle(station: model.station)
           }
           Group {
@@ -303,12 +303,13 @@ struct ControlCenter: View {
             case .comms: CommsView()
             case .events: EventsView()
             case .nav: NavView()
+            case .psyart: PsyartView()
             case .dev: DevView()
             }
           }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(width: w - contentX - 14, height: h - 100 - bottomBand - 10 - 22, alignment: .topLeading)
-        .offset(x: contentX, y: model.station == .nav || model.station == .dev ? 100 : 104)
+        .offset(x: contentX, y: [.nav, .dev, .psyart].contains(model.station) ? 100 : 104)
       }
     }.ignoresSafeArea().background(.black).foregroundStyle(Color.accText).tint(.accPeach)
       .frame(minWidth: 1100, minHeight: 790)

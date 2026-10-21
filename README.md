@@ -1,6 +1,6 @@
 # USS ACC — Allen Control Center
 
-A native macOS LCARS command center for **BRIDGE / COMMS / EVENTS / NAV / DEV**.
+A native macOS LCARS command center for **BRIDGE / COMMS / EVENTS / NAV / PSYART / DEV**.
 
 ![USS ACC native application](docs/screenshots/bridge.png)
 
@@ -24,7 +24,19 @@ Open `Package.swift` in Xcode for development. Launch the packaged `.app` for Ca
 - **Nav:** Apple Maps place search, directions handoff, and editable persistent journey legs for air, taxi, train, boat, road, and walking. Calendar import detects travel candidates by word-boundary keywords and requires review of endpoints/time zones; it does not parse tickets, book travel, or verify flight status. Reviewed legs are preserved when importing again. No live routing/flight reservation service is connected.
 - **Dev:** interactive PTY terminal with multiple persistent sessions and project-folder selection, powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm). Sessions start only after New Session/Open Folder. Settings covers general mode, service connections, the spam filter, and notifications.
 
-Switch stations with **⌘1–⌘5**. Open Settings with **⌘,**. The upper-right Demo/Live control separates fictional content from your accounts. Live connections are opt-in. On launch USS ACC reopens the last workspace and reconnects only the sources you previously connected; nothing new is requested.
+Switch stations with **⌘1–⌘6**. Open Settings with **⌘,**. The upper-right Demo/Live control separates fictional content from your accounts. Live connections are opt-in. On launch USS ACC reopens the last workspace and reconnects only the sources you previously connected; nothing new is requested.
+
+## PSYART
+
+**New transmission** draws five random countries (the 193 UN members plus the two observer states) and five random worlds from a catalog of real planets, moons, dwarf planets and stations plus Star Trek canon planets, moons and starbases. On-device Apple Intelligence writes a title and cultural-psyche reading and proposes artists; artists are matched in the iTunes Search API, and the model then chooses five songs and two albums **from those artists' real catalogs**, so every recording exists (30-second previews play in the app). Videos open YouTube searches for the chosen songs, or resolve to real videos and thumbnails with an optional YouTube Data API key (stored in the Keychain). Place records come from Wikipedia (real) and Memory Alpha (Star Trek). The last page is saved to `psyart.json`.
+
+### SDR tuner (bladeRF + Ham It Up)
+
+The strip at the bottom of PSYART drives a bladeRF via libbladeRF (`brew install libbladerf`), loaded at runtime so the app runs without it. Modes: WFM (75 µs de-emphasis), NFM, AM and USB/LSB (Weaver), demodulated at 2.4 MS/s with offset tuning to avoid the DC spike, to 48 kHz audio. **Ham It Up** adds the upconverter's +125 MHz LO offset, which is required below 70 MHz (the bladeRF 2.0 micro tunes 70 MHz–6 GHz).
+
+Audio plays only while PSYART is on screen and AUDIO is on. Otherwise, while SDR is online, the radio sweeps the band plan at 10 MS/s (FM, airband, 2 m, marine, NOAA, 70 cm, FRS/GMRS, ISM, ADS-B; plus AM broadcast, shortwave, 40/20/10 m and CB with Ham It Up). Each emission's centre is estimated by power-weighted centroid and snapped to the band's channel raster, its bandwidth measured, and its modulation guessed from bandwidth, carrier prominence and sideband asymmetry plus the band plan. Signals that recur at the same offset from centre across tunings are rejected as receiver spurs, and a channel is listed only after a second sweep confirms it. The list is saved to `channels.json`; tap a channel to tune it.
+
+Developer checks: `--sdr-scan-test`, `--sdr-listen-test <MHz>` (measures the 19 kHz stereo pilot), `--sdr-worker-test`, `--psyart-test`.
 
 ## Operational Importance filter
 
@@ -58,6 +70,7 @@ Call scoring is limited to data a future call/voicemail adapter can supply. The 
 - `journeys.json`: manually added/reviewed live itinerary legs.
 - `intake.json`: seen mail IDs, per-source baselines, local quarantine IDs and classification metadata/reasons.
 - `accounts.json`: IMAP account settings (no passwords).
+- `psyart.json`, `channels.json`: last PSYART page and the SDR channel list.
 - `messages.sqlite`: downloaded mail — sender, subject, date, body text (first 24 KB), score, quarantine/trash state — with a full-text index. Mail from the last 14 days is kept in full.
 - `archive/<account>/YYYY-MM.pack`: LZFSE-compressed bodies of older mail. The database keeps metadata, scores and the search index; opening an archived message decompresses it back into the database for another 14 days. Removing an account deletes its stored mail and archive packs.
 - `preferences.json`: last workspace (Demo/Live) and whether Apple Mail and Calendar were connected; restored on launch.

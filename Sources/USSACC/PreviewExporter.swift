@@ -1,4 +1,5 @@
 import ACCCore
+import os
 import AppKit
 import SwiftUI
 
@@ -7,11 +8,29 @@ import SwiftUI
   /// Developer checks run with demo content and must not touch saved session state.
   static var isDevRun: Bool {
     let arguments = ProcessInfo.processInfo.arguments
-    return ["--snapshot-dir", "--check-classifier", "--check-terminal", "--probe-imap"].contains(
+    return [
+      "--snapshot-dir", "--check-classifier", "--check-terminal", "--probe-imap", "--sdr-scan-test",
+      "--sdr-listen-test", "--psyart-test", "--sdr-worker-test",
+    ].contains(
       where: arguments.contains)
   }
-  static func runIfRequested(model: AppModel) async {
+  static func runIfRequested(model: AppModel, psyart: PsyartModel? = nil) async {
     let arguments = ProcessInfo.processInfo.arguments
+    if arguments.contains("--psyart-test"), let psyart {
+      await psyart.generate()
+      if let page = psyart.page, psyart.error.isEmpty {
+        print("PSYART: \(page.title) — \(page.tagline)")
+        print("PSYART: countries \(page.countries.map(\.name).joined(separator: ", "))")
+        print("PSYART: worlds \(page.places.map { $0.name + ($0.trek ? " [trek]" : "") }.joined(separator: ", "))")
+        print("PSYART: place records \(page.info.count)/10")
+        for item in page.artists { print("PSYART: artist  \(item.verified ? "✓" : "✗") \(item.title)") }
+        for item in page.songs { print("PSYART: song    \(item.verified ? "✓" : "✗") \(item.title) — \(item.artist)\(item.preview == nil ? "" : " ♪")") }
+        for item in page.albums { print("PSYART: album   \(item.verified ? "✓" : "✗") \(item.title) — \(item.artist)") }
+        for item in page.videos { print("PSYART: video   \(item.title) [\(item.query)]") }
+      } else { print("PSYART: failed: \(psyart.error)") }
+      NSApplication.shared.terminate(nil)
+      return
+    }
     if arguments.contains("--check-classifier") {
       print(Intelligence.availability)
       for (body, known) in [
@@ -46,6 +65,134 @@ import SwiftUI
         } catch { print("IMAP: invalid login rejected as expected: \(error.localizedDescription)") }
         await session.logout()
       } catch { print("IMAP: probe failed: \(error.localizedDescription)") }
+      NSApplication.shared.terminate(nil)
+      return
+    }
+    if arguments.contains("--sdr-worker-test") {
+      // Runs the app's radio thread headless: 20 s background scan, then 4 s of listening.
+      let ring = AudioRing()
+      let worker = SDRWorker(ring: ring)
+      let log = OSAllocatedUnfairLock(initialState: (statuses: [String](), scans: 0, found: [ChannelCandidate](), spectra: 0))
+      worker.onStatus = { text in log.withLock { if $0.statuses.last != text { $0.statuses.append(text) } } }
+      worker.onScan = { _ in log.withLock { $0.scans += 1 } }
+      worker.onSpectrum = { _, _ in log.withLock { $0.spectra += 1 } }
+      worker.onChannels = { found in log.withLock { $0.found = ChannelList.merge($0.found, with: found) } }
+      worker.update {
+        $0.online = true
+        $0.frequency = 98.1e6
+        $0.mode = .wfm
+      }
+      worker.start()
+      try? await Task.sleep(for: .seconds(20))
+      let scan = log.withLock { $0 }
+      print("SDR worker: \(scan.scans) scan steps · \(scan.spectra) spectra · \(scan.found.count) channels")
+      for c in scan.found.sorted(by: { $0.snr > $1.snr }).prefix(8) {
+        print(String(format: "SDR worker:   %.6f MHz bw %.0f %@ %@ snr %.0f dB hits %d", c.frequency / 1e6, c.bandwidth, c.mode.rawValue, c.band, c.snr, c.hits))
+      }
+      worker.update { $0.listen = true }
+      try? await Task.sleep(for: .seconds(4))
+      var probe = [Float](repeating: 0, count: 48_000)
+      probe.withUnsafeMutableBufferPointer { ring.pull(into: $0.baseAddress!, count: 48_000) }
+      let rms = sqrt(probe.map { $0 * $0 }.reduce(0, +) / 48_000)
+      print("SDR worker: listening audio RMS \(String(format: "%.3f", rms)) · statuses: \(log.withLock { $0.statuses }.joined(separator: " | "))")
+      NSApplication.shared.terminate(nil)
+      return
+    }
+    if arguments.contains("--sdr-scan-test") {
+      // Sweeps FM broadcast on the connected bladeRF and prints detected stations.
+      do {
+        let radio = try BladeRFDevice()
+        try radio.configure(sampleRate: SDRTuning.scanRate, bandwidth: 8_000_000)
+        try radio.setGain(nil)
+        let analyzer = SpectrumAnalyzer(size: 4096)
+        var channels: [ChannelCandidate] = []
+        let env = ProcessInfo.processInfo.environment
+        let start = env["SDR_START"].flatMap(Double.init) ?? 92e6
+        let end = env["SDR_END"].flatMap(Double.init) ?? 108e6
+        for centre in stride(from: start, through: end, by: 8e6) {
+          try radio.tune(centre)
+          _ = try radio.read(16384)
+          analyzer.reset()
+          for _ in 0..<4 {
+            let (i, q) = try radio.read(16384)
+            analyzer.add(i: i, q: q)
+          }
+          let found = SignalDetector.detect(
+            spectrum: analyzer.spectrum, centerFrequency: centre, sampleRate: radio.sampleRate,
+            thresholdDB: 14, skipCenter: 60e3, minimumBins: 3)
+          channels = ChannelList.merge(channels, with: found)
+        }
+        radio.close()
+        for c in channels.sorted(by: { $0.snr > $1.snr }).prefix(15) {
+          print(String(format: "SDR: %8.3f MHz  bw %5.0f kHz  snr %4.1f dB  %@", c.frequency / 1e6, c.bandwidth / 1e3, c.snr, c.mode.rawValue))
+        }
+        print("SDR: \(channels.count) channels detected")
+      } catch { print("SDR: scan failed: \(error.localizedDescription)") }
+      NSApplication.shared.terminate(nil)
+      return
+    }
+    if let index = arguments.firstIndex(of: "--sdr-listen-test"), arguments.indices.contains(index + 1),
+      let mhz = Double(arguments[index + 1])
+    {
+      // Demodulates WFM for 3 s and checks the 19 kHz stereo pilot in the FM baseband.
+      do {
+        let radio = try BladeRFDevice()
+        let env = ProcessInfo.processInfo.environment
+        try radio.configure(
+          sampleRate: env["SDR_RATE"].flatMap(Double.init) ?? SDRTuning.listenRate,
+          bandwidth: env["SDR_BW"].flatMap(Double.init) ?? 1_500_000)
+        let manualGain = ProcessInfo.processInfo.environment["SDR_GAIN"].flatMap { Int($0) }
+        try radio.setGain(manualGain)
+        try radio.tune(mhz * 1e6 - SDRTuning.listenOffset)
+        _ = try radio.read(16384)
+        var demod = Demodulator(mode: .wfm, inputRate: radio.sampleRate, offset: SDRTuning.listenOffset)
+        var mixer = Mixer(frequency: SDRTuning.listenOffset, rate: radio.sampleRate)
+        var decimator = ComplexDecimator(taps: FIR.lowpass(cutoff: 110e3, rate: radio.sampleRate, taps: 81), factor: 10)
+        var fm = FMDemodulator()
+        let baseband = SpectrumAnalyzer(size: 4096)
+        var audio: [Float] = []
+        var pending: [Float] = []
+        for _ in 0..<Int(3 * radio.sampleRate / 16384) {
+          let (i, q) = try radio.read(16384)
+          audio += demod.process(i: i, q: q)
+          var mi = i
+          var mq = q
+          mixer.process(i: &mi, q: &mq)
+          let (di, dq) = decimator.process(i: mi, q: mq)
+          pending += fm.process(i: di, q: dq)
+          if pending.count >= 4096 {
+            baseband.add(i: Array(pending.prefix(4096)), q: [Float](repeating: 0, count: 4096))
+            pending.removeFirst(4096)
+          }
+        }
+        // Channel power: station band vs equal-width noise reference elsewhere in the capture.
+        let (ci, cq) = try radio.read(65536)
+        let rf = SpectrumAnalyzer(size: 4096)
+        rf.add(i: ci, q: cq)
+        let rfSpectrum = rf.spectrum
+        let hz = radio.sampleRate / 4096
+        func bandPower(_ from: Double, _ to: Double) -> Float {
+          let a = 2048 + Int(from / hz)
+          let b = 2048 + Int(to / hz)
+          return 10 * log10(rfSpectrum[a...b].map { pow(10, $0 / 10) }.reduce(0, +))
+        }
+        let station = bandPower(SDRTuning.listenOffset - 90e3, SDRTuning.listenOffset + 90e3)
+        let noise = bandPower(-SDRTuning.listenOffset - 90e3, -SDRTuning.listenOffset + 90e3)
+        let peaks = rfSpectrum.indices.sorted { rfSpectrum[$0] > rfSpectrum[$1] }.prefix(5)
+          .map { String(format: "%+.0fk:%.0f", (Double($0) - 2048) * hz / 1e3, rfSpectrum[$0]) }
+        let sortedRF = rfSpectrum.sorted()
+        print("SDR: rate \(Int(radio.sampleRate)) · median \(String(format: "%.1f", sortedRF[2048])) dB · peaks \(peaks.joined(separator: " "))")
+        print(String(format: "SDR: gain %@ · channel power %.1f dB vs reference %.1f dB (CNR ≈ %.1f dB)", manualGain.map(String.init) ?? "AGC", station, noise, station - noise))
+        radio.close()
+        let spectrum = baseband.spectrum
+        let binHz = 240_000.0 / 4096
+        let pilotBin = 2048 + Int(19_000 / binHz)
+        let pilot = spectrum[(pilotBin - 2)...(pilotBin + 2)].max()!
+        let around = (spectrum[(pilotBin - 40)...(pilotBin - 10)] + spectrum[(pilotBin + 10)...(pilotBin + 40)]).sorted()
+        let floor = around[around.count / 2]
+        let rms = sqrt(audio.map { $0 * $0 }.reduce(0, +) / Float(max(audio.count, 1)))
+        print(String(format: "SDR: %.3f MHz · %d audio samples · RMS %.3f · 19 kHz pilot %+.1f dB over neighbours", mhz, audio.count, rms, pilot - floor))
+      } catch { print("SDR: listen failed: \(error.localizedDescription)") }
       NSApplication.shared.terminate(nil)
       return
     }

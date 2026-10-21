@@ -3,12 +3,18 @@ import SwiftUI
 @main struct USSACCApp: App {
   @StateObject private var model = AppModel()
   @StateObject private var shells = TerminalSessions()
+  @StateObject private var psyart = PsyartModel()
+  @StateObject private var sdr = SDRController()
   var body: some Scene {
     WindowGroup("USS ACC · Allen Control Center") {
-      ControlCenter().environmentObject(model).environmentObject(shells).preferredColorScheme(.dark)
+      ControlCenter().environmentObject(model).environmentObject(shells).environmentObject(psyart)
+        .environmentObject(sdr).preferredColorScheme(.dark)
         .task {
-          if !PreviewExporter.isDevRun { model.restoreSession() }
-          await PreviewExporter.runIfRequested(model: model)
+          if !PreviewExporter.isDevRun {
+            model.restoreSession()
+            sdr.start()
+          }
+          await PreviewExporter.runIfRequested(model: model, psyart: psyart)
         }
     }.windowStyle(.hiddenTitleBar).defaultSize(width: 1450, height: 940)
       .commands {
