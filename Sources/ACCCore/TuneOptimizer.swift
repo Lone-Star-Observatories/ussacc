@@ -57,10 +57,15 @@ public struct TuneOptimizer: Sendable {
   var best = -Double.infinity
   let minimumWidth: Double
   let maximumWidth: Double
+  /// AM: the carrier holds most of the power but no audio, so retention is judged on the
+  /// sidebands with the carrier notched out.
+  let excludeCarrier: Bool
 
   public init(
-    base: Double, bandwidth: Double, searchRange: Double, minimumRetention: Double = 0.9
+    base: Double, bandwidth: Double, searchRange: Double, minimumRetention: Double = 0.9,
+    excludeCarrier: Bool = false
   ) {
+    self.excludeCarrier = excludeCarrier
     self.base = base
     self.bandwidth = bandwidth
     self.searchRange = searchRange
@@ -84,6 +89,13 @@ public struct TuneOptimizer: Sendable {
     let noise = SNRMeter.noiseDensity(spectrum)
     func snr(_ offset: Double, _ width: Double) -> (snr: Double, signal: Double) {
       SNRMeter.measure(spectrum: spectrum, binHz: binHz, offset: base + offset, bandwidth: width, noise: noise)
+    }
+    /// Power that counts toward retention: everything, or sidebands only for AM.
+    func retained(_ offset: Double, _ width: Double) -> Double {
+      let total = snr(offset, width).signal
+      guard excludeCarrier else { return total }
+      let carrier = snr(offset, max(3 * binHz, 300)).signal
+      return max(total - carrier, 0)
     }
     switch phase {
     case .detect:
@@ -115,8 +127,9 @@ public struct TuneOptimizer: Sendable {
 
     case .centre:
       // A half-width probe only peaks when it sits on the signal's energy; a full-width window
-      // that already contains the whole signal would be flat across small shifts.
-      let probe = bandwidth / 2
+      // that already contains the whole signal would be flat across small shifts. AM locks onto
+      // its carrier with a narrow probe, since program audio makes the sidebands lopsided.
+      let probe = excludeCarrier ? max(3 * binHz, 300) : bandwidth / 2
       let up = snr(offset + centreStep, probe).snr
       let down = snr(offset - centreStep, probe).snr
       best = snr(offset, probe).snr  // re-measure: spectra are noisy frame to frame
@@ -127,7 +140,7 @@ public struct TuneOptimizer: Sendable {
       }
       centreStep /= 2
       if centreStep < minimumCentreStep {
-        referenceSignal = snr(offset, bandwidth * 2).signal
+        referenceSignal = retained(offset, bandwidth * 2)
         phase = .bandwidth
         best = snr(offset, bandwidth).snr
       }
@@ -140,7 +153,7 @@ public struct TuneOptimizer: Sendable {
       var choice: (width: Double, snr: Double)?
       for width in candidates {
         let value = snr(offset, width)
-        guard value.signal >= minimumRetention * referenceSignal else { continue }
+        guard retained(offset, width) >= minimumRetention * referenceSignal else { continue }
         if value.snr > best + 0.05, value.snr > (choice?.snr ?? -.infinity) { choice = (width, value.snr) }
       }
       if let choice {

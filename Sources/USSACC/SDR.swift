@@ -82,10 +82,17 @@ final class BladeRFDevice {
       throw IntegrationError.message("bladeRF: \(lib.message(status))")
     }
   }
-  deinit { close() }
-  func close() {
+  deinit { stop() }
+  /// Stops streaming but keeps the device open. libbladeRF 2025.10's bladerf_close can spin
+  /// forever in async_deinit_stream after a sync stream has run, so the handle is kept for the
+  /// life of the process; macOS releases the USB device when USS ACC quits.
+  func stop() {
     if streaming { _ = lib.enableModule(device, BladeRFLibrary.rx0, false) }
     streaming = false
+  }
+  /// Only safe for handles that never streamed (or at process exit).
+  func close() {
+    stop()
     if let device { lib.close(device) }
     device = nil
   }
@@ -414,10 +421,11 @@ final class SDRWorker: @unchecked Sendable {
     while true {
       let current = snapshot
       guard current.online else {
-        device?.close()
-        device = nil
-        configuredRate = 0
-        onStatus("SDR offline")
+        if configuredRate != 0 {
+          device?.stop()
+          configuredRate = 0
+          onStatus("SDR offline · radio idle (quit USS ACC to release the bladeRF)")
+        }
         Thread.sleep(forTimeInterval: 0.3)
         continue
       }
@@ -435,8 +443,9 @@ final class SDRWorker: @unchecked Sendable {
         }
       } catch {
         onStatus(error.localizedDescription)
-        device?.close()
-        device = nil
+        // Keep an opened handle (closing can hang); force a full reconfigure on the next pass.
+        device?.stop()
+        configuredRate = 0
         Thread.sleep(forTimeInterval: 2)
       }
     }
@@ -506,7 +515,9 @@ final class SDRWorker: @unchecked Sendable {
     let width = config.bandwidth ?? config.mode.defaultBandwidth
     let raster = BandPlan.band(at: config.frequency)?.raster ?? 0
     let range = max(5e3, min(150e3, max(raster, width / 2)))
-    var optimizer = TuneOptimizer(base: SDRTuning.listenOffset, bandwidth: width, searchRange: range)
+    var optimizer = TuneOptimizer(
+      base: SDRTuning.listenOffset, bandwidth: width, searchRange: range,
+      excludeCarrier: config.mode == .am)
     let analyzer = SpectrumAnalyzer(size: 8192)
     let binHz = radio.sampleRate / 8192
     _ = try radio.read(16384)  // settle

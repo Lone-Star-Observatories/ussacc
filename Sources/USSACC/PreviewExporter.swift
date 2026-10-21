@@ -144,7 +144,7 @@ import SwiftUI
             thresholdDB: 14, skipCenter: 60e3, minimumBins: 3)
           channels = ChannelList.merge(channels, with: found)
         }
-        radio.close()
+        radio.stop()
         for c in channels.sorted(by: { $0.snr > $1.snr }).prefix(15) {
           print(String(format: "SDR: %8.3f MHz  bw %5.0f kHz  snr %4.1f dB  %@", c.frequency / 1e6, c.bandwidth / 1e3, c.snr, c.mode.rawValue))
         }
@@ -208,7 +208,7 @@ import SwiftUI
         let sortedRF = rfSpectrum.sorted()
         print("SDR: rate \(Int(radio.sampleRate)) · median \(String(format: "%.1f", sortedRF[2048])) dB · peaks \(peaks.joined(separator: " "))")
         print(String(format: "SDR: gain %@ · channel power %.1f dB vs reference %.1f dB (CNR ≈ %.1f dB)", manualGain.map(String.init) ?? "AGC", station, noise, station - noise))
-        radio.close()
+        radio.stop()
         let spectrum = baseband.spectrum
         let binHz = 240_000.0 / 4096
         let pilotBin = 2048 + Int(19_000 / binHz)

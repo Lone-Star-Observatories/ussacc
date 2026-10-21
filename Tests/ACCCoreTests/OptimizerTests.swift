@@ -43,6 +43,28 @@ import Testing
     #expect(optimizer.history.contains { $0.phase == .bandwidth && $0.accepted })
   }
 
+  @Test func amKeepsSidebandsInsteadOfCollapsingOntoTheCarrier() {
+    // Strong carrier with ±4.5 kHz sidebands 25 dB below it.
+    func amSpectrum(seed: UInt64) -> ([Float], Double) {
+      var (s, binHz) = spectrum(signalAt: 250e3, width: 9e3, level: -85, seed: seed)
+      let centre = s.count / 2 + Int(250e3 / binHz)
+      s[centre] = -60
+      return (s, binHz)
+    }
+    var plain = TuneOptimizer(base: 250e3, bandwidth: 10e3, searchRange: 5e3)
+    var am = TuneOptimizer(base: 250e3, bandwidth: 10e3, searchRange: 5e3, excludeCarrier: true)
+    var seed: UInt64 = 40
+    while !(plain.finished && am.finished) && seed < 300 {
+      let (s, binHz) = amSpectrum(seed: seed)
+      if !plain.finished { plain.step(spectrum: s, binHz: binHz) }
+      if !am.finished { am.step(spectrum: s, binHz: binHz) }
+      seed += 1
+    }
+    #expect(plain.bandwidth < 6e3)  // total-power rule trims the sidebands
+    #expect(am.bandwidth > 8e3)  // sideband rule keeps the audio
+    #expect(abs(am.offset) <= 150)  // locked on the carrier
+  }
+
   @Test func detectJumpsToNearbySignalAndReportsAbsence() {
     var jump = TuneOptimizer(base: 250e3, bandwidth: 10e3, searchRange: 20e3)
     let (s, binHz) = spectrum(signalAt: 265e3, width: 6e3, seed: 7)
