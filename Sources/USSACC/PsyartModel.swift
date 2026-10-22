@@ -200,7 +200,7 @@ struct PsyartPage: Codable, Equatable {
         // Higher-temperature sampling keeps successive transmissions from converging on the same names.
         let mix = try await session.respond(
           to: prompt + avoidance, generating: GeneratedMix.self,
-          options: GenerationOptions(sampling: .random(top: 50), temperature: 1.2)
+          options: GenerationOptions(samplingMode: .random(top: 50), temperature: 1.2)
         ).content
         return Mix(title: mix.title, tagline: mix.tagline, reading: mix.reading, artists: mix.artists)
       }
