@@ -2,32 +2,37 @@ import ACCCore
 import AppKit
 import Charts
 import SwiftUI
+import WebKit
 
 struct PsyartView: View {
   @EnvironmentObject private var psy: PsyartModel
   @EnvironmentObject private var sdr: SDRController
   @State private var keyEditor = false
+  @State private var featured = 0
+  @State private var place: String?
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       header
       if let page = psy.page {
         ScrollView {
-          VStack(spacing: 12) {
-            coordinates(page)
-            HStack(alignment: .top, spacing: 12) {
-              psyche(page).frame(maxWidth: .infinity)
-              audio(page).frame(width: 470)
+          VStack(alignment: .leading, spacing: 16) {
+            hero(page)
+            HStack(alignment: .top, spacing: 16) {
+              videoWall(page).frame(maxWidth: .infinity)
+              listeningRoom(page).frame(width: 430)
             }
-            videos(page)
-          }
+            coordinates(page)
+          }.padding(.bottom, 6)
+        }
+        .onChange(of: page.created) { _, _ in
+          featured = 0
+          place = nil
         }
       } else {
         ACCPanel {
           EmptyStation(
-            symbol: "sparkles", title: "AWAITING COORDINATES",
-            detail:
-              "Draw five Earth cultures and five worlds, then let Apple Intelligence compose a cultural transmission."
-          )
+            symbol: "sparkles", title: "AWAITING TRANSMISSION",
+            detail: "Compose a new cultural transmission: music and video curated on device.")
         }.frame(maxHeight: .infinity)
       }
       if sdr.optimizing || !sdr.optimizerSteps.isEmpty { SNROptimizerPanel() }
@@ -46,53 +51,246 @@ struct PsyartView: View {
           psy.busy ? Color.accLavender : Color.accPeach
         ).lineLimit(2).frame(maxWidth: 420, alignment: .trailing)
       }
-      Button(psy.youtubeKeySaved ? "YouTube key ✓" : "Add YouTube key") { keyEditor = true }
-        .buttonStyle(.plain).font(.lcars(16)).foregroundStyle(Color.accLavender)
-        .popover(isPresented: $keyEditor) { YouTubeKeyEditor().environmentObject(psy) }
+      if !psy.youtubeKeySaved {
+        Button("Add YouTube key") { keyEditor = true }.buttonStyle(.plain).font(.lcars(16))
+          .foregroundStyle(Color.accLavender)
+          .popover(isPresented: $keyEditor) { YouTubeKeyEditor().environmentObject(psy) }
+      }
       ACCButton(
         title: psy.busy ? "COMPOSING…" : "NEW TRANSMISSION", symbol: "dice.fill", primary: true
       ) { Task { await psy.generate() } }.fixedSize().disabled(psy.busy)
     }
   }
 
-  func coordinates(_ page: PsyartPage) -> some View {
-    ACCPanel(padding: 12) {
-      HStack(spacing: 8) {
-        ForEach(page.countries) { country in
-          tile(id: country.id, page: page, name: country.name) {
-            Text(country.flag).font(.system(size: 46))
+  // MARK: Hero
+
+  func hero(_ page: PsyartPage) -> some View {
+    VStack(alignment: .leading, spacing: 4) {
+      Text(page.title.uppercased()).font(.lcars(58, weight: .bold)).foregroundStyle(Color.accPeach)
+        .lineLimit(1).minimumScaleFactor(0.6)
+      Text(page.tagline).font(.acc(23, weight: .medium)).foregroundStyle(Color.accLavender)
+        .lineLimit(1)
+      Text(page.reading).font(.acc(15)).foregroundStyle(Color.accDim).lineLimit(2)
+        .help(page.reading)
+    }.padding(.horizontal, 4)
+  }
+
+  // MARK: Video
+
+  func videoWall(_ page: PsyartPage) -> some View {
+    let videos = page.videos
+    let index = min(featured, max(0, videos.count - 1))
+    return VStack(alignment: .leading, spacing: 12) {
+      sectionLabel("SCREENING ROOM", detail: psy.youtubeKeySaved ? "YouTube" : "YouTube search · add a key in Settings to play inline")
+      if videos.indices.contains(index) {
+        let video = videos[index]
+        ZStack {
+          if let id = video.videoID {
+            YouTubePlayer(videoID: id)
+          } else {
+            Button {
+              NSWorkspace.shared.open(video.link)
+            } label: {
+              ZStack {
+                cover(video.thumbnail ?? video.artwork, blur: video.thumbnail == nil)
+                Circle().fill(Color.black.opacity(0.55)).frame(width: 86, height: 86)
+                Image(systemName: "play.fill").font(.system(size: 34)).foregroundStyle(Color.accPeach)
+              }
+            }.buttonStyle(.plain)
           }
+        }.aspectRatio(16 / 9, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 16))
+          .overlay(RoundedRectangle(cornerRadius: 16).stroke(Color.accBorder.opacity(0.6), lineWidth: 1))
+        HStack(alignment: .firstTextBaseline) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(video.videoTitle ?? video.title).font(.acc(22, weight: .medium)).lineLimit(1)
+            Text(video.channel ?? "Opens YouTube search").font(.acc(15)).foregroundStyle(Color.accDim)
+          }
+          Spacer()
+          Link(destination: video.link) {
+            Label("YOUTUBE", systemImage: "arrow.up.right").font(.lcars(15))
+          }.foregroundStyle(Color.accLavender)
         }
-        ForEach(page.places) { place in
-          tile(id: place.id, page: page, name: place.name) {
-            if let image = page.info[place.id]?.image {
-              AsyncImage(url: image) { $0.resizable().scaledToFill() } placeholder: { Color.accField }
-                .frame(width: 54, height: 54).clipShape(Circle())
-                .overlay(Circle().stroke(place.trek ? Color.accLavender : Color.accGreen, lineWidth: 1.5))
-            } else {
-              Image(systemName: symbol(place.kind)).font(.system(size: 30, weight: .medium))
-                .foregroundStyle(place.trek ? Color.accLavender : Color.accGreen).frame(height: 54)
+        HStack(spacing: 10) {
+          ForEach(Array(videos.enumerated()), id: \.element.id) { n, other in
+            if n != index {
+              Button {
+                featured = n
+              } label: {
+                VStack(alignment: .leading, spacing: 5) {
+                  ZStack {
+                    cover(other.thumbnail ?? other.artwork, blur: false)
+                    Image(systemName: "play.circle.fill").font(.system(size: 22))
+                      .foregroundStyle(.white.opacity(0.9)).shadow(radius: 3)
+                  }.aspectRatio(16 / 9, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 10))
+                  Text(other.videoTitle ?? other.title).font(.acc(13)).foregroundStyle(Color.accText)
+                    .lineLimit(2).multilineTextAlignment(.leading)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+              }.buttonStyle(.plain)
             }
           }
         }
       }
     }
   }
-  /// Minimal coordinate tile; clicking opens the place's Wikipedia or Memory Alpha record.
-  func tile<Mark: View>(id: String, page: PsyartPage, name: String, @ViewBuilder mark: () -> Mark)
+
+  // MARK: Music
+
+  func listeningRoom(_ page: PsyartPage) -> some View {
+    VStack(alignment: .leading, spacing: 14) {
+      sectionLabel("LISTENING ROOM", detail: "Apple Music")
+      HStack(spacing: 12) {
+        ForEach(page.albums) { album in
+          Button {
+            if let link = album.link { NSWorkspace.shared.open(link) }
+          } label: {
+            VStack(alignment: .leading, spacing: 4) {
+              artwork(album.artwork, size: 203)
+              Text(album.title).font(.acc(15, weight: .medium)).lineLimit(1)
+              Text(album.artist).font(.acc(13)).foregroundStyle(Color.accDim).lineLimit(1)
+            }
+          }.buttonStyle(.plain)
+        }
+      }
+      VStack(spacing: 6) {
+        ForEach(page.songs) { song in
+          HStack(spacing: 12) {
+            artwork(song.artwork, size: 44)
+            VStack(alignment: .leading, spacing: 0) {
+              Text(song.title).font(.acc(17, weight: .medium)).lineLimit(1)
+              Text(song.artist).font(.acc(13)).foregroundStyle(Color.accDim).lineLimit(1)
+            }
+            Spacer(minLength: 6)
+            if song.preview != nil {
+              Button {
+                psy.togglePreview(song.preview)
+              } label: {
+                Image(systemName: psy.playing == song.preview ? "pause.fill" : "play.fill")
+                  .font(.system(size: 13, weight: .bold)).foregroundStyle(.black)
+                  .frame(width: 30, height: 30).background(Color.accPeach, in: Circle())
+              }.buttonStyle(.plain).help("30-second preview")
+            }
+            if let link = song.link {
+              Button {
+                NSWorkspace.shared.open(link)
+              } label: {
+                Image(systemName: "arrow.up.right").font(.system(size: 13, weight: .semibold))
+                  .foregroundStyle(Color.accLavender)
+              }.buttonStyle(.plain).help("Open in Apple Music")
+            }
+          }.padding(.vertical, 2)
+        }
+      }
+      HStack(spacing: 14) {
+        ForEach(page.artists) { artist in
+          Button {
+            if let link = artist.link { NSWorkspace.shared.open(link) }
+          } label: {
+            HStack(spacing: 8) {
+              artwork(artist.artwork, size: 40, circle: true)
+              VStack(alignment: .leading, spacing: 0) {
+                Text(artist.title).font(.acc(14, weight: .medium)).lineLimit(1)
+                Text(artist.artist).font(.acc(11)).foregroundStyle(Color.accDim).lineLimit(1)
+              }
+            }
+          }.buttonStyle(.plain)
+        }
+      }
+    }
+  }
+
+  // MARK: Coordinates (minor)
+
+  func coordinates(_ page: PsyartPage) -> some View {
+    let ids = page.countries.map(\.id) + page.places.map(\.id)
+    let selected = place.flatMap { ids.contains($0) ? $0 : nil } ?? ids.first ?? ""
+    let country = page.countries.first { $0.id == selected }
+    let world = page.places.first { $0.id == selected }
+    let info = page.info[selected]
+    return VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 6) {
+        Text("COORDINATES").font(.lcars(15)).foregroundStyle(Color.accLavender)
+        ForEach(page.countries) { c in
+          selectorChip(id: c.id, selected: selected) { Text(c.flag).font(.system(size: 22)) }
+            .help(c.name)
+        }
+        Rectangle().fill(Color.accBorder).frame(width: 1, height: 22)
+        ForEach(page.places) { p in
+          selectorChip(id: p.id, selected: selected) {
+            if let image = page.info[p.id]?.image {
+              AsyncImage(url: image) { $0.resizable().scaledToFill() } placeholder: { Color.accField }
+                .frame(width: 26, height: 26).clipShape(Circle())
+            } else {
+              Image(systemName: symbol(p.kind)).font(.system(size: 16))
+                .foregroundStyle(p.trek ? Color.accLavender : Color.accGreen)
+            }
+          }.help(p.name)
+        }
+        Spacer()
+      }
+      HStack(alignment: .top, spacing: 12) {
+        ZStack {
+          Color.accField
+          if let image = info?.image {
+            AsyncImage(url: image) { $0.resizable().scaledToFill() } placeholder: { Color.accField }
+          } else if let country {
+            Text(country.flag).font(.system(size: 34))
+          }
+        }.frame(width: 64, height: 64).clipShape(RoundedRectangle(cornerRadius: 10))
+        VStack(alignment: .leading, spacing: 3) {
+          HStack(spacing: 8) {
+            Text(country?.name ?? world?.name ?? "").font(.acc(17, weight: .medium))
+            if let world {
+              Text(world.trek ? "STAR TREK · \(world.kind.label.uppercased())" : world.kind.label.uppercased())
+                .font(.lcars(11)).foregroundStyle(Color.accDim)
+            }
+          }
+          Text(info?.summary ?? "No record found.").font(.acc(14)).foregroundStyle(Color.accDim)
+            .lineLimit(3)
+          if let link = info?.link {
+            Link("OPEN RECORD", destination: link).font(.lcars(12)).foregroundStyle(Color.accPeach)
+          }
+        }
+        Spacer(minLength: 0)
+      }
+    }.padding(12)
+      .background(Color.accCard.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
+  }
+  func selectorChip<Mark: View>(id: String, selected: String, @ViewBuilder mark: () -> Mark)
     -> some View
   {
-    let link = page.info[id]?.link
-    return Button {
-      if let link { NSWorkspace.shared.open(link) }
+    Button {
+      place = id
     } label: {
-      VStack(spacing: 4) {
-        mark().frame(height: 56)
-        Text(name).font(.acc(13)).foregroundStyle(Color.accDim).lineLimit(1)
-      }.frame(maxWidth: .infinity).padding(.vertical, 8)
-        .background(Color.accCard.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
-        .contentShape(RoundedRectangle(cornerRadius: 12))
-    }.buttonStyle(.plain).help(link == nil ? name : "Open \(name) record").disabled(link == nil)
+      mark().frame(width: 34, height: 30)
+        .background(
+          id == selected ? Color.accPeach.opacity(0.28) : Color.clear,
+          in: RoundedRectangle(cornerRadius: 7)
+        )
+        .overlay(alignment: .bottom) {
+          if id == selected { Rectangle().fill(Color.accPeach).frame(height: 2) }
+        }
+    }.buttonStyle(.plain)
+  }
+
+  // MARK: Shared
+
+  func sectionLabel(_ title: String, detail: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 10) {
+      Rectangle().fill(Color.accPeach).frame(width: 24, height: 4)
+      Text(title).font(.lcars(20)).foregroundStyle(Color.accText)
+      Text(detail).font(.acc(13)).foregroundStyle(Color.accDim)
+    }
+  }
+  func cover(_ url: URL?, blur: Bool) -> some View {
+    ZStack {
+      LinearGradient(
+        colors: [Color.accLavender.opacity(0.35), Color.accPeach.opacity(0.25)],
+        startPoint: .topLeading, endPoint: .bottomTrailing)
+      if let url {
+        AsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { Color.clear }
+          .blur(radius: blur ? 18 : 0).opacity(blur ? 0.85 : 1)
+      }
+    }
   }
   func symbol(_ kind: CelestialKind) -> String {
     switch kind {
@@ -101,111 +299,6 @@ struct PsyartView: View {
     case .moon: "moon.fill"
     case .starbase: "star.circle.fill"
     case .station: "antenna.radiowaves.left.and.right"
-    }
-  }
-
-  func psyche(_ page: PsyartPage) -> some View {
-    ACCPanel(title: page.title.uppercased(), subtitle: page.tagline, padding: 16) {
-      Text("CULTURAL PSYCHE · generated on device by Apple Intelligence").font(.lcars(16))
-        .foregroundStyle(Color.accLavender)
-      Text(page.reading).font(.acc(20)).textSelection(.enabled)
-      ACCDivider()
-      LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
-        ForEach(page.countries.map(\.id) + page.places.map(\.id), id: \.self) { id in
-          placeCard(id: id, page: page)
-        }
-      }
-    }
-  }
-  func placeCard(id: String, page: PsyartPage) -> some View {
-    let country = page.countries.first { $0.id == id }
-    let place = page.places.first { $0.id == id }
-    let info = page.info[id]
-    return HStack(alignment: .top, spacing: 12) {
-      ZStack {
-        Color.accField
-        if let image = info?.image {
-          AsyncImage(url: image) { $0.resizable().scaledToFill() } placeholder: { Color.accField }
-        } else if let country {
-          Text(country.flag).font(.system(size: 40))
-        } else if let place {
-          Image(systemName: symbol(place.kind)).font(.system(size: 30)).foregroundStyle(Color.accLavender)
-        }
-      }.frame(width: 84, height: 84).clipShape(RoundedRectangle(cornerRadius: 10))
-      VStack(alignment: .leading, spacing: 3) {
-        HStack(spacing: 6) {
-          Text(country?.name ?? place?.name ?? "").font(.acc(19, weight: .medium)).lineLimit(1)
-          if place?.trek == true { ACCTag(text: "Memory Alpha") }
-        }
-        Text(info?.summary ?? "No record found.").font(.acc(15)).foregroundStyle(Color.accDim)
-          .lineLimit(4)
-        if let link = info?.link {
-          Link("OPEN RECORD", destination: link).font(.lcars(13)).foregroundStyle(Color.accPeach)
-        }
-      }
-      Spacer(minLength: 0)
-    }.padding(10).background(Color.black, in: RoundedRectangle(cornerRadius: 12))
-      .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accBorder.opacity(0.7), lineWidth: 1))
-  }
-
-  func audio(_ page: PsyartPage) -> some View {
-    ACCPanel(title: "AUDIO MANIFEST", subtitle: "Matched against Apple Music", padding: 16) {
-      Text("ARTISTS").font(.lcars(18)).foregroundStyle(Color.accLavender)
-      HStack(alignment: .top, spacing: 12) {
-        ForEach(page.artists) { artist in
-          VStack(spacing: 6) {
-            artwork(artist.artwork, size: 104, circle: true)
-            Text(artist.title).font(.acc(17, weight: .medium)).lineLimit(2).multilineTextAlignment(.center)
-            if !artist.artist.isEmpty {
-              Text(artist.artist).font(.acc(14)).foregroundStyle(Color.accDim)
-            }
-            if !artist.verified { ACCTag(text: "Unverified", color: .accPeach) }
-          }.frame(maxWidth: .infinity).onTapGesture { if let link = artist.link { NSWorkspace.shared.open(link) } }
-        }
-      }
-      ACCDivider()
-      Text("SONGS").font(.lcars(18)).foregroundStyle(Color.accLavender)
-      ForEach(page.songs) { song in
-        HStack(spacing: 12) {
-          artwork(song.artwork, size: 48)
-          VStack(alignment: .leading, spacing: 1) {
-            Text(song.title).font(.acc(18, weight: .medium)).lineLimit(1)
-            Text(song.artist).font(.acc(15)).foregroundStyle(Color.accDim).lineLimit(1)
-          }
-          Spacer()
-          if !song.verified { ACCTag(text: "Unverified", color: .accPeach) }
-          if song.preview != nil {
-            Button {
-              psy.togglePreview(song.preview)
-            } label: {
-              Image(systemName: psy.playing == song.preview ? "stop.fill" : "play.fill")
-                .font(.system(size: 15, weight: .bold)).foregroundStyle(.black)
-                .frame(width: 34, height: 34).background(Color.accPeach, in: Circle())
-            }.buttonStyle(.plain).help("Play 30-second preview")
-          }
-          if let link = song.link {
-            Button {
-              NSWorkspace.shared.open(link)
-            } label: {
-              Image(systemName: "arrow.up.right.square").font(.system(size: 18))
-                .foregroundStyle(Color.accLavender)
-            }.buttonStyle(.plain).help("Open in Apple Music")
-          }
-        }
-      }
-      ACCDivider()
-      Text("ALBUMS").font(.lcars(18)).foregroundStyle(Color.accLavender)
-      HStack(alignment: .top, spacing: 12) {
-        ForEach(page.albums) { album in
-          VStack(alignment: .leading, spacing: 4) {
-            artwork(album.artwork, size: 200)
-            Text(album.title).font(.acc(17, weight: .medium)).lineLimit(2)
-            Text(album.artist).font(.acc(14)).foregroundStyle(Color.accDim)
-            if !album.verified { ACCTag(text: "Unverified", color: .accPeach) }
-          }.frame(maxWidth: .infinity, alignment: .leading)
-            .onTapGesture { if let link = album.link { NSWorkspace.shared.open(link) } }
-        }
-      }
     }
   }
   func artwork(_ url: URL?, size: CGFloat, circle: Bool = false) -> some View {
@@ -217,43 +310,35 @@ struct PsyartView: View {
         Image(systemName: "music.note").foregroundStyle(Color.accLavender)
       }
     }.frame(width: size, height: size)
-      .clipShape(RoundedRectangle(cornerRadius: circle ? size / 2 : 10))
-      .overlay(
-        RoundedRectangle(cornerRadius: circle ? size / 2 : 10).stroke(Color.accBorder, lineWidth: 1))
+      .clipShape(RoundedRectangle(cornerRadius: circle ? size / 2 : 8))
   }
+}
 
-  func videos(_ page: PsyartPage) -> some View {
-    ACCPanel(
-      title: "VISUAL TRANSMISSIONS",
-      subtitle: psy.youtubeKeySaved ? "Resolved on YouTube" : "Opens YouTube searches · add a YouTube key for thumbnails",
-      padding: 16
-    ) {
-      HStack(alignment: .top, spacing: 10) {
-        ForEach(page.videos) { video in
-          Button {
-            NSWorkspace.shared.open(video.link)
-          } label: {
-            VStack(alignment: .leading, spacing: 6) {
-              ZStack {
-                LinearGradient(
-                  colors: [Color.accLavender.opacity(0.35), Color.accPeach.opacity(0.25)],
-                  startPoint: .topLeading, endPoint: .bottomTrailing)
-                if let thumb = video.thumbnail {
-                  AsyncImage(url: thumb) { $0.resizable().scaledToFill() } placeholder: { Color.clear }
-                }
-                Image(systemName: "play.rectangle.fill").font(.system(size: 30)).foregroundStyle(.white)
-                  .shadow(radius: 4)
-              }.aspectRatio(16 / 9, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 10))
-              Text(video.videoTitle ?? video.title).font(.acc(16, weight: .medium)).lineLimit(2)
-                .multilineTextAlignment(.leading)
-              Text(video.channel ?? "Search: \(video.query)").font(.acc(13)).foregroundStyle(Color.accDim)
-                .lineLimit(1)
-            }.foregroundStyle(Color.accText).frame(maxWidth: .infinity, alignment: .leading)
-          }.buttonStyle(.plain)
-        }
-      }
-    }
+/// YouTube's privacy-enhanced embedded player.
+struct YouTubePlayer: NSViewRepresentable {
+  let videoID: String
+  func makeNSView(context: Context) -> WKWebView {
+    let configuration = WKWebViewConfiguration()
+    configuration.mediaTypesRequiringUserActionForPlayback = []
+    let view = WKWebView(frame: .zero, configuration: configuration)
+    view.setValue(false, forKey: "drawsBackground")
+    return view
   }
+  func updateNSView(_ view: WKWebView, context: Context) {
+    guard context.coordinator.loaded != videoID else { return }
+    context.coordinator.loaded = videoID
+    let html = """
+      <html><body style="margin:0;background:#000">
+      <iframe width="100%" height="100%" style="border:0;position:absolute;inset:0"
+        src="https://www.youtube-nocookie.com/embed/\(videoID)?rel=0&modestbranding=1&playsinline=1"
+        allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>
+      </body></html>
+      """
+    // YouTube requires a referring origin for embeds.
+    view.loadHTMLString(html, baseURL: URL(string: "https://uss-acc.local"))
+  }
+  func makeCoordinator() -> Coordinator { Coordinator() }
+  final class Coordinator { var loaded: String? }
 }
 
 struct YouTubeKeyEditor: View {

@@ -35,6 +35,8 @@ struct DevView: View {
 }
 struct SettingsView: View {
   @EnvironmentObject private var model: AppModel
+  @EnvironmentObject private var psy: PsyartModel
+  @State private var youtubeKey = ""
   private var section: String {
     get { model.settingsSection }
     nonmutating set { model.settingsSection = newValue }
@@ -349,6 +351,29 @@ struct SettingsView: View {
           Text(
             "Last 14 days are kept in full. Older bodies are compressed into per-account archive packs; they stay searchable and are restored when opened."
           ).font(.acc(15)).foregroundStyle(Color.accDim)
+        }
+      }
+      ACCDivider()
+      Text("YouTube").font(.lcars(24)).foregroundStyle(Color.accLavender)
+      Text(
+        psy.youtubeKeySaved
+          ? "Data API key saved in your Keychain. PSYART resolves real videos and plays them inline."
+          : "Optional. Without a key PSYART opens YouTube searches. Create a key for the YouTube Data API v3 in Google Cloud Console."
+      ).font(.acc(16)).foregroundStyle(Color.accDim)
+      HStack(spacing: 10) {
+        SecureField(psy.youtubeKeySaved ? "Saved — enter a new key to replace" : "YouTube Data API key", text: $youtubeKey)
+          .textFieldStyle(.plain).font(.acc(17)).padding(.horizontal, 12).frame(width: 380, height: 40)
+          .background(Color.accField, in: RoundedRectangle(cornerRadius: 10))
+          .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accBorder, lineWidth: 1.2))
+        ACCButton(title: "SAVE KEY", primary: true, height: 40) {
+          psy.saveYouTubeKey(youtubeKey)
+          youtubeKey = ""
+        }.fixedSize().disabled(youtubeKey.trimmingCharacters(in: .whitespaces).isEmpty)
+        if psy.youtubeKeySaved {
+          ACCButton(title: "REMOVE", kind: .outline, height: 40) { psy.saveYouTubeKey("") }.fixedSize()
+        }
+        if let url = URL(string: "https://console.cloud.google.com/apis/library/youtube.googleapis.com") {
+          Link("Get a key", destination: url).font(.lcars(16)).foregroundStyle(Color.accLavender)
         }
       }
       ACCDivider()

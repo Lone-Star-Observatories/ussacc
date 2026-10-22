@@ -232,9 +232,14 @@ enum SDRTuning {
   init() {
     let defaults = UserDefaults.standard
     online = defaults.object(forKey: "sdr.online") as? Bool ?? true
-    hamItUp = defaults.bool(forKey: "sdr.hamItUp")
-    frequency = defaults.object(forKey: "sdr.frequency") as? Double ?? 98.1e6
-    mode = SDRMode(rawValue: defaults.string(forKey: "sdr.mode") ?? "") ?? .wfm
+    let ham = defaults.bool(forKey: "sdr.hamItUp")
+    hamItUp = ham
+    let saved = defaults.object(forKey: "sdr.frequency") as? Double ?? 98.1e6
+    let savedMode = SDRMode(rawValue: defaults.string(forKey: "sdr.mode") ?? "") ?? .wfm
+    // A frequency saved before the antenna path changed may be unreceivable; start somewhere valid.
+    let valid = BandPlan.receptionProblem(saved, hamItUp: ham) == nil
+    frequency = valid ? saved : (ham ? 10e6 : 98.1e6)
+    mode = valid ? savedMode : (ham ? .am : .wfm)
     channels =
       (try? LocalPersistence.load(
         [ChannelCandidate].self,

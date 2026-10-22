@@ -48,6 +48,10 @@ struct VideoItem: Codable, Equatable, Identifiable {
   var channel: String?
   var thumbnail: URL?
   var link: URL
+  /// Resolved YouTube id (needs an API key); enables inline playback.
+  var videoID: String?
+  /// Artwork of the song the video was found for, used when there is no thumbnail.
+  var artwork: URL?
   var id: String { query }
 }
 struct PsyartPage: Codable, Equatable {
@@ -135,7 +139,10 @@ struct PsyartPage: Codable, Equatable {
       let videos = await withTaskGroup(of: (Int, VideoItem).self) { group in
         for (n, song) in chosenSongs.enumerated() {
           group.addTask {
-            (n, await YouTube.resolve(title: "\(song.artist) – \(song.title)", query: "\(song.artist) \(song.title)", key: key))
+            var video = await YouTube.resolve(
+              title: "\(song.artist) – \(song.title)", query: "\(song.artist) \(song.title)", key: key)
+            video.artwork = song.artwork
+            return (n, video)
           }
         }
         var out: [(Int, VideoItem)] = []
@@ -437,6 +444,6 @@ enum YouTube {
     return VideoItem(
       title: title, query: query, videoTitle: snippet["title"] as? String,
       channel: snippet["channelTitle"] as? String, thumbnail: thumb.flatMap(URL.init),
-      link: URL(string: "https://www.youtube.com/watch?v=\(id)")!)
+      link: URL(string: "https://www.youtube.com/watch?v=\(id)")!, videoID: id)
   }
 }
