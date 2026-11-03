@@ -69,9 +69,8 @@ struct CommsView: View {
                   HStack {
                     Text(item.preview).font(.acc(19)).foregroundStyle(Color.accDim).lineLimit(1)
                     Spacer(minLength: 6)
-                    if let level = item.classification?.level {
-                      Text("OP\(level)").font(.lcars(14)).foregroundStyle(
-                        level == 5 ? Color.accPeach : Color.accLavender)
+                    if item.channel == .email || item.classification != nil {
+                      OPBadge(level: item.classification?.level, size: 15)
                     }
                   }
                 }
@@ -198,20 +197,7 @@ struct CommsView: View {
           } else {
             Text(item.body).font(.acc(20)).textSelection(.enabled)
           }
-          HStack(spacing: 14) {
-            if let classification = item.classification {
-              Text("\(classification.reason) · \(classification.source)").font(.acc(15))
-                .foregroundStyle(Color.accDim).lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            Button("CLASSIFY") { Task { await model.classify(id: item.id) } }
-            Menu("CORRECT SCORE") {
-              ForEach(1...5, id: \.self) { level in
-                Button("OP\(level)") { model.correctScore(item.id, level: level) }
-              }
-            }.menuStyle(.borderlessButton).fixedSize()
-            if item.quarantined { Button("RESTORE") { model.restore(item.id) } }
-          }.font(.lcars(15)).foregroundStyle(Color.accLavender).buttonStyle(.plain)
+          scoreBar(item)
         }.padding(.horizontal, 26).padding(.vertical, 16)
           .frame(maxWidth: .infinity, alignment: .leading)
           .background(Color.accCard, in: RoundedRectangle(cornerRadius: 12))
@@ -220,6 +206,64 @@ struct CommsView: View {
               highlighted ? Color.accPeach : Color.accBorder, lineWidth: highlighted ? 1.6 : 1.2))
       }.padding(.bottom, 22)
     }
+  }
+  /// Always-visible classification controls: the current score and reason, one chip per level
+  /// (choosing one applies that level's saved rule), AI re-classify, restore and delete.
+  func scoreBar(_ item: Communication) -> some View {
+    let current = item.classification?.level
+    return VStack(alignment: .leading, spacing: 10) {
+      ACCDivider()
+      HStack(spacing: 8) {
+        Text("CLASSIFY").font(.lcars(15)).foregroundStyle(Color.accDim).padding(.trailing, 4)
+        ForEach(1...5, id: \.self) { level in
+          let chosen = current == level
+          Button {
+            Task { await model.correctScore(item.id, level: level) }
+          } label: {
+            Text("OP\(level)").font(.lcars(16))
+              .foregroundStyle(chosen ? Color.black : Color.op(level))
+              .frame(width: 58, height: 32)
+              .background(chosen ? Color.op(level) : Color.accField, in: Capsule())
+              .overlay(Capsule().stroke(Color.op(level), lineWidth: chosen ? 0 : 1.4))
+              .contentShape(Capsule())
+          }.buttonStyle(.plain).help(scoreHelp(level))
+        }
+        Spacer(minLength: 8)
+        Button { Task { await model.classify(id: item.id) } } label: {
+          Label("AI", systemImage: "sparkles").font(.lcars(15))
+        }.buttonStyle(.plain).foregroundStyle(Color.accLavender)
+          .help("Ask the on-device model to score this message (no rule is applied)")
+        if item.quarantined {
+          Button { model.restore(item.id) } label: {
+            Label("RESTORE", systemImage: "tray.and.arrow.up").font(.lcars(15))
+          }.buttonStyle(.plain).foregroundStyle(Color.accLavender)
+        }
+        if item.channel == .email {
+          Button { Task { await model.delete(item.id) } } label: {
+            Label("DELETE", systemImage: "trash").font(.lcars(15)).foregroundStyle(.black)
+              .padding(.horizontal, 12).frame(height: 32)
+              .background(Color.op(1), in: Capsule()).contentShape(Capsule())
+          }.buttonStyle(.plain).help("Mark OP1 and move to the account's Trash")
+        }
+      }
+      if let classification = item.classification {
+        Text("\(classification.reason) · \(classification.source)").font(.acc(15))
+          .foregroundStyle(Color.accDim).lineLimit(2)
+      } else {
+        Text("Not scored yet. Pick a level, or AI to ask the on-device model.").font(.acc(15))
+          .foregroundStyle(Color.accDim)
+      }
+    }
+  }
+  func scoreHelp(_ level: Int) -> String {
+    let meaning = model.policy.meaning(for: level)
+    let action: String
+    switch PolicyDecision.manual(level: level, policy: model.policy) {
+    case .keep: action = "keeps it in the inbox"
+    case .quarantine: action = "moves it to quarantine"
+    case .delete: action = "moves it to Trash"
+    }
+    return "OP\(level)\(meaning.isEmpty ? "" : " — \(meaning)") · your rule \(action)"
   }
   func composer(for selected: Communication) -> some View {
     VStack(alignment: .leading, spacing: 12) {

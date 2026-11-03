@@ -131,6 +131,12 @@ public struct PolicyDecision: Equatable, Sendable {
     let rule = policy.rule(for: score)
     return .init(disposition: rule.disposition, highlight: rule.highlight, notify: rule.push)
   }
+  /// Disposition for a score Allen sets by hand. The saved rule for that level applies whether or
+  /// not automatic filtering is enabled; OP5 is always kept.
+  public static func manual(level: Int, policy: FilterPolicy) -> Disposition {
+    guard (1...5).contains(level) else { return .keep }
+    return policy.rule(for: level).disposition
+  }
 }
 
 /// Explicit, previewed application of the saved rules to mail that has already arrived.

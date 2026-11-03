@@ -205,9 +205,15 @@ struct PsyartPage: Codable, Equatable {
           .joined(separator: ", ") + "."
         let avoidance = avoid.isEmpty ? "" : "\nDo not suggest any of these recently used artists: \(avoid.joined(separator: ", "))."
         // Higher-temperature sampling keeps successive transmissions from converging on the same names.
+        // The SDK renamed this label: Swift 6.4 toolchains (local Xcode) take samplingMode:,
+        // Swift 6.3 (CI runner) takes sampling:.
+        #if compiler(>=6.4)
+          let options = GenerationOptions(samplingMode: .random(top: 50), temperature: 1.2)
+        #else
+          let options = GenerationOptions(sampling: .random(top: 50), temperature: 1.2)
+        #endif
         let mix = try await session.respond(
-          to: prompt + avoidance, generating: GeneratedMix.self,
-          options: GenerationOptions(samplingMode: .random(top: 50), temperature: 1.2)
+          to: prompt + avoidance, generating: GeneratedMix.self, options: options
         ).content
         return Mix(title: mix.title, tagline: mix.tagline, reading: mix.reading, artists: mix.artists)
       }
