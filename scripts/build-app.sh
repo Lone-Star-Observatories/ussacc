@@ -10,8 +10,8 @@ build_args=()
 if [[ -n "${ACC_BUILD_PATH:-}" ]]; then build_args+=(--scratch-path "$ACC_BUILD_PATH"); fi
 if [[ -n "${ACC_BUILD_SYSTEM:-}" ]]; then build_args+=(--build-system "$ACC_BUILD_SYSTEM"); fi
 if [[ -n "${ACC_PLUGIN_PATH:-}" ]]; then build_args+=(-Xswiftc -plugin-path -Xswiftc "$ACC_PLUGIN_PATH"); fi
-swift build "${build_args[@]}" -c "$configuration"
-bin_dir="$(swift build "${build_args[@]}" -c "$configuration" --show-bin-path)"
+swift build ${build_args[@]+"${build_args[@]}"} -c "$configuration"
+bin_dir="$(swift build ${build_args[@]+"${build_args[@]}"} -c "$configuration" --show-bin-path)"
 app="$PWD/build/USS ACC.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin_dir/USSACC" "$app/Contents/MacOS/USSACC"
