@@ -23,6 +23,19 @@ import Testing
         == PolicyDecision(disposition: .keep, highlight: false, notify: false))
     #expect(PolicyDecision.evaluate(item(level: 1), policy: policy).disposition == .delete)
   }
+  @Test func manualScoreAppliesSavedRuleEvenWhenAutoFilterIsOff() {
+    var policy = FilterPolicy()
+    policy.rules = [
+      LevelRule(level: 1, disposition: .delete), LevelRule(level: 2, disposition: .quarantine),
+      LevelRule(level: 3), LevelRule(level: 4), LevelRule(level: 5, disposition: .delete),
+    ]
+    #expect(!policy.enabled)
+    #expect(PolicyDecision.manual(level: 1, policy: policy) == .delete)
+    #expect(PolicyDecision.manual(level: 2, policy: policy) == .quarantine)
+    #expect(PolicyDecision.manual(level: 3, policy: policy) == .keep)
+    #expect(PolicyDecision.manual(level: 5, policy: policy) == .keep)
+    #expect(PolicyDecision.manual(level: 0, policy: policy) == .keep)
+  }
   @Test func unknownSenderCannotReceiveOP5AndUndefinedLevelsStayUnscored() {
     #expect(Classification.validated(level: 5, reason: "Question", isKnown: false).level == nil)
     #expect(Classification.validated(level: 5, reason: "Direct question", isKnown: true).level == 5)

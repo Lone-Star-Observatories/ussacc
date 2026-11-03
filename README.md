@@ -19,7 +19,7 @@ Open `Package.swift` in Xcode for development. Launch the packaged `.app` for Ca
 ## Workspaces
 
 - **Bridge:** priority communications, major upcoming events, and the next travel leg. Each opens its full workspace.
-- **Comms:** unified person/address-based timeline for email, messages, and call activity. OP badges, explanations, manual score corrections, search, quarantine review, and a shared system composer. Demo data demonstrates all channels. Live incoming mail supports **Gmail, iCloud, Yahoo, Fastmail and any IMAP server over TLS**, plus **Apple Mail** automation; accounts can be **imported from Apple Mail** (server settings only — enter an app password for each). Messages and calls use **explicit system handoff**, not an undocumented Messages database or inline live call API.
+- **Comms:** unified person/address-based timeline for email, messages, and call activity. colour-coded OP badges on every conversation and message, explanations, search, quarantine review, and a shared system composer. Demo data demonstrates all channels. Live incoming mail supports **Gmail, iCloud, Yahoo, Fastmail and any IMAP server over TLS**, plus **Apple Mail** automation; accounts can be **imported from Apple Mail** (server settings only — enter an app password for each). Messages and calls use **explicit system handoff**, not an undocumented Messages database or inline live call API.
 - **Events:** seven-day schedule and event detail. Opt-in EventKit reads the next 60 days, including invitations delivered to your system calendars. Refresh is explicit.
 - **Nav:** Apple Maps place search, directions handoff, and editable persistent journey legs for air, taxi, train, boat, road, and walking. Calendar import detects travel candidates by word-boundary keywords and requires review of endpoints/time zones; it does not parse tickets, book travel, or verify flight status. Reviewed legs are preserved when importing again. No live routing/flight reservation service is connected.
 - **Dev:** interactive PTY terminal with multiple persistent sessions and project-folder selection, powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm). Sessions start only after New Session/Open Folder. Settings covers general mode, service connections, the spam filter, and notifications.
@@ -51,6 +51,8 @@ The central COMMS filter uses Apple's on-device [Foundation Models](https://deve
 | OP3 | General unique but regular items, like receipts |
 | OP2 | Eblasts, newsletters, regular emails |
 | OP1 | Unactionable garbage |
+
+In **Comms**, every email shows its score and a row of **OP1–OP5** chips. Picking a level records a manual correction and applies that level's saved rule immediately, even with automatic filtering off (Quarantine → local quarantine, Delete → Trash, Keep → back to the inbox; OP5 is always kept). **DELETE** records the message as OP1 and moves it to Trash whatever the OP1 rule says. **AI** re-scores with the on-device model without applying a rule. Hover a chip to see its meaning and what your rule will do.
 
 Edit each meaning in the Spam Filter table and Save Rules; the classifier is instructed with your definitions. A blank meaning disables that level.
 
