@@ -14,7 +14,7 @@ swift test
 open 'build/USS ACC.app'
 ```
 
-Open `Package.swift` in Xcode for development. Launch the packaged `.app` for Calendar, Automation and notification permissions: its Info.plist includes the privacy descriptions. `scripts/build-app.sh debug` packages a faster development build. The bundle is ad-hoc signed for local use, not notarized for distribution. The terminal requires a non-sandboxed app.
+SwiftTerm compiles a Metal shader, so the build needs Xcode's separately downloaded Metal toolchain. macOS treats it as purgeable and deletes it when the startup disk runs low; `scripts/build-app.sh` reinstalls it automatically, and for `swift test` or Xcode run `xcodebuild -downloadComponent MetalToolchain` if a build fails in `Shaders.metal`. Open `Package.swift` in Xcode for development. Launch the packaged `.app` for Calendar, Automation and notification permissions: its Info.plist includes the privacy descriptions. `scripts/build-app.sh debug` packages a faster development build. The bundle is ad-hoc signed for local use, not notarized for distribution. The terminal requires a non-sandboxed app.
 
 ## Workspaces
 
