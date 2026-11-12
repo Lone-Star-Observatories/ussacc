@@ -155,6 +155,14 @@ enum Station: String, CaseIterable, Identifiable {
         classification: .init(
           level: 1, reason: "Routine informational notice.", source: "Sample data"), isDemo: true),
     ]
+    var code = Communication(
+      id: "demo-code", name: "Observatory Portal", address: "no-reply@example.com", channel: .email,
+      subject: "Your sign-in code",
+      body: "Your verification code is 482913. It expires in 10 minutes.",
+      date: now.addingTimeInterval(-6 * 60),
+      classification: .init(level: 3, reason: "Sign-in code.", source: "Sample data"), isDemo: true)
+    code.oneTimeCode = "482913"
+    communications.append(code)
     events = [
       CalendarEntry(
         id: "demo-session", title: "Observatory session", start: date(20), end: date(22),
@@ -216,7 +224,7 @@ enum Station: String, CaseIterable, Identifiable {
         [JourneyLeg].self, from: folder.appendingPathComponent("journeys.json"))) ?? []
     status = "Live workspace · connect accounts in DEV → Settings"
     calendarStatus = "Calendar not connected"
-    communications = (try? store?.recent()) ?? []
+    communications = ((try? store?.recent()) ?? []).map(withCode)
     selectedIdentity = communications.first?.identity
     runArchival()
     appleMailEnabled = prefs.appleMail
@@ -440,7 +448,7 @@ enum Station: String, CaseIterable, Identifiable {
         var item = item
         item.quarantined = ledger.quarantinedIDs.contains(item.id)
         item.classification = ledger.classifications[item.id]
-        return item
+        return withCode(item)
       }
       for item in fetched where arrivals.contains(item.id) {
         guard token == generation, !demo, !Task.isCancelled else { return }
@@ -448,12 +456,16 @@ enum Station: String, CaseIterable, Identifiable {
         // using the current saved policy.
         if policy.enabled || policy.senderLevel(item.address) != nil {
           await classify(id: item.id, applyActions: true, token: token)
+        } else if OneTimeCode.isCandidate(subject: item.subject, body: item.body) {
+          // Verification codes are found whether or not automatic filtering is on.
+          await recordCode(item.id, await Intelligence.detectCode(item), token: token)
         }
         guard token == generation else { return }
       }
     }
     communications.sort { $0.date > $1.date }
     if selectedIdentity == nil { selectedIdentity = communications.first?.identity }
+    await sweepExpiredCodes()
     runArchival()
     let sources = batches.count
     status =
@@ -473,15 +485,20 @@ enum Station: String, CaseIterable, Identifiable {
     let savedPolicy = policy
     let ruled = askModel ? nil : savedPolicy.senderLevel(item.address)
     let result: Classification
+    let code: String?
     if let ruled {
       result = .senderRule(ruled)
+      code = await Intelligence.detectCode(item)
     } else {
-      result = await Intelligence.classify(
+      let analysis = await Intelligence.analyze(
         item, known: policy.isKnown(item.address) || (item.isDemo && item.name == "Jamie"),
         policy: savedPolicy)
+      result = analysis.classification
+      code = analysis.code
     }
-    guard context == generation, let index = communications.firstIndex(where: { $0.id == id })
-    else { return }
+    guard context == generation, communications.contains(where: { $0.id == id }) else { return }
+    await recordCode(id, code, token: context)
+    guard let index = communications.firstIndex(where: { $0.id == id }) else { return }
     if applyActions && communications[index].classification?.source == Classification.manualSource {
       return
     }
@@ -497,6 +514,8 @@ enum Station: String, CaseIterable, Identifiable {
       decision.disposition = PolicyDecision.manual(level: ruled, policy: policy)
       decision.notify = policy.rule(for: ruled).push
     }
+    // A verification code stays in the inbox, pinned at the top, until it expires.
+    if communications[index].oneTimeCode != nil { decision.disposition = .keep }
     do {
       switch decision.disposition {
       case .keep: break
@@ -514,6 +533,55 @@ enum Station: String, CaseIterable, Identifiable {
       }
       if decision.notify { notify(communications.first { $0.id == id } ?? item) }
     } catch { status = "Filter action failed; message retained: \(error.localizedDescription)" }
+  }
+  // MARK: Verification codes
+  private func withCode(_ item: Communication) -> Communication {
+    var item = item
+    item.oneTimeCode = ledger.codes[item.id]
+    return item
+  }
+  /// Stores a code found in a message (ignored if Allen said it holds none).
+  private func recordCode(_ id: String, _ code: String?, token: Int) async {
+    guard token == generation, let code, !ledger.dismissedCodes.contains(id),
+      let index = communications.firstIndex(where: { $0.id == id })
+    else { return }
+    communications[index].oneTimeCode = code
+    if !communications[index].isDemo {
+      ledger.codes[id] = code
+      persistLedger()
+    }
+  }
+  /// Live messages holding a verification code, newest first.
+  var codeMessages: [Communication] {
+    communications.filter { $0.oneTimeCode != nil && !$0.trashed }.sorted { $0.date > $1.date }
+  }
+  /// "Not a code": drops the message from the codes list and from automatic deletion.
+  func dismissCode(_ id: String) {
+    if let index = communications.firstIndex(where: { $0.id == id }) {
+      communications[index].oneTimeCode = nil
+    }
+    ledger.codes[id] = nil
+    ledger.dismissedCodes.insert(id)
+    persistLedger()
+  }
+  /// Moves code messages older than two hours to Trash. OP5 mail is never removed this way.
+  func sweepExpiredCodes() async {
+    guard !demo else { return }
+    let expired = communications.filter {
+      $0.oneTimeCode != nil && !$0.trashed && !$0.isDemo && OneTimeCode.expired($0.date)
+        && $0.classification?.level != 5
+    }
+    guard !expired.isEmpty else { return }
+    let (moved, failures) = await trashBatch(expired.map(\.id), token: generation)
+    for item in expired where communications.first(where: { $0.id == item.id })?.trashed == true {
+      ledger.codes[item.id] = nil
+    }
+    persistLedger()
+    if moved > 0 || !failures.isEmpty {
+      status =
+        "Removed \(moved) expired verification code\(moved == 1 ? "" : "s")"
+        + (failures.isEmpty ? "" : " · kept after errors: \(failures.joined(separator: "; "))")
+    }
   }
   // MARK: Local store
   /// Rolls mail outside the hot window into archive packs and updates the loaded list.
@@ -584,7 +652,7 @@ enum Station: String, CaseIterable, Identifiable {
           var item = item
           item.classification = ledger.classifications[item.id]
           item.quarantined = ledger.quarantinedIDs.contains(item.id)
-          return item
+          return withCode(item)
         }
         added += batch.items.count
       } catch { failures.append("\(account.title): \(error.localizedDescription)") }

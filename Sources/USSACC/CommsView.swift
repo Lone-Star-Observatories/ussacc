@@ -12,6 +12,8 @@ struct CommsView: View {
   @State private var destination = ""
   /// List order: newest first, or grouped by OP level (highest first, newest within a level).
   @AppStorage("commsGroupByLevel") private var groupByLevel = false
+  /// Show only one OP level (1–5), unscored (0) or everything (-1).
+  @AppStorage("commsLevelFilter") private var levelFilter = -1
   /// Conversations picked with ⌘-click or Shift-click (sender identities), and the row a
   /// Shift-click range starts from. One picked row is the ordinary single selection.
   @State private var picked: Set<String> = []
@@ -26,7 +28,12 @@ struct CommsView: View {
     let destructive: Bool
     let run: @MainActor () async -> Void
   }
+  /// Messages in the current view: inbox or quarantine, search, and the OP filter.
   var items: [Communication] {
+    guard levelFilter >= 0 else { return viewItems }
+    return viewItems.filter { ($0.classification?.level ?? 0) == levelFilter }
+  }
+  var viewItems: [Communication] {
     // Live searches use the local store's index, which also covers archived mail.
     if !search.isEmpty, let stored = model.searchStored(search) {
       let loaded = Dictionary(model.communications.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -47,6 +54,79 @@ struct CommsView: View {
       let (la, lb) = (level(of: a.element), level(of: b.element))
       return la != lb ? la > lb : a.offset < b.offset
     }.map(\.element)
+  }
+  /// ALL / OP5…OP1 / unscored chips; ⌥0–⌥5 switch them from the keyboard.
+  func filterChip(_ title: String, value: Int, color: Color, key: Character?) -> some View {
+    let on = levelFilter == value
+    let button = Button {
+      levelFilter = on && value >= 0 ? -1 : value
+      picked = []
+    } label: {
+      Text(title).font(.lcars(15)).foregroundStyle(on ? Color.black : color)
+        .padding(.horizontal, 10).frame(minWidth: 30).frame(height: 28)
+        .background(on ? color : Color.accField, in: Capsule())
+        .overlay(Capsule().stroke(color, lineWidth: on ? 0 : 1.2)).contentShape(Capsule())
+    }.buttonStyle(.plain)
+    return Group {
+      if let key {
+        button.keyboardShortcut(KeyEquivalent(key), modifiers: .option)
+          .help(value < 0 ? "Show everything (⌥0)" : "Show only OP\(value) (⌥\(key))")
+      } else {
+        button
+      }
+    }
+  }
+  /// Verification codes, pinned above everything, with time left before they go to Trash.
+  var codesStrip: some View {
+    TimelineView(.periodic(from: .now, by: 30)) { context in
+      VStack(alignment: .leading, spacing: 8) {
+        Label("VERIFICATION CODES", systemImage: "key.fill").font(.lcars(16))
+          .foregroundStyle(Color.accPeach)
+        ForEach(Array(model.codeMessages.prefix(4))) { item in
+          codeCard(item, now: context.date)
+        }
+      }
+    }
+  }
+  func codeCard(_ item: Communication, now: Date) -> some View {
+    let left = OneTimeCode.lifetime - now.timeIntervalSince(item.date)
+    let minutes = max(0, Int(left / 60))
+    let expiry =
+      item.classification?.level == 5
+      ? "kept · OP5"
+      : left <= 0 ? "deleting…" : minutes >= 60 ? "deletes in \(minutes / 60)h \(minutes % 60)m" : "deletes in \(minutes)m"
+    return HStack(spacing: 12) {
+      Button {
+        quarantine = item.quarantined
+        if levelFilter >= 0, (item.classification?.level ?? 0) != levelFilter { levelFilter = -1 }
+        picked = []
+        model.selectedIdentity = item.identity
+      } label: {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(item.oneTimeCode ?? "").font(.system(size: 28, weight: .bold, design: .monospaced))
+            .foregroundStyle(Color.accText)
+          Text("\(item.name) · \(item.date.accRelative)").font(.acc(15))
+            .foregroundStyle(Color.accDim).lineLimit(1)
+        }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+      }.buttonStyle(.plain).help("Open this message")
+      Text(expiry).font(.acc(14)).foregroundStyle(Color.accDim)
+      Button {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(item.oneTimeCode ?? "", forType: .string)
+        model.status = "Copied code from \(item.name)"
+      } label: {
+        Label("COPY", systemImage: "doc.on.doc").font(.lcars(15)).foregroundStyle(.black)
+          .padding(.horizontal, 12).frame(height: 32)
+          .background(Color.accPeach, in: Capsule()).contentShape(Capsule())
+      }.buttonStyle(.plain)
+      Button { model.dismissCode(item.id) } label: {
+        Image(systemName: "xmark").font(.system(size: 13, weight: .bold))
+          .frame(width: 26, height: 26).contentShape(Rectangle())
+      }.buttonStyle(.plain).foregroundStyle(Color.accDim)
+        .help("Not a code: unpin it and don't delete it")
+    }.padding(.horizontal, 14).padding(.vertical, 10)
+      .background(Color.accCard, in: RoundedRectangle(cornerRadius: 12))
+      .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.accPeach, lineWidth: 1.4))
   }
   enum TrashState { case none, some, all }
   /// Whether this conversation's visible messages are on their way to Trash.
@@ -134,12 +214,22 @@ struct CommsView: View {
   }
   var list: some View {
     ACCPanel(padding: 16) {
+      if !model.codeMessages.isEmpty { codesStrip }
       HStack(spacing: 12) {
         ACCField(placeholder: "Search conversations…", text: $search, symbol: "magnifyingglass")
         ACCButton(title: "NEW CONVERSATION", symbol: "plus", primary: true) {
           destination = ""
           newConversation = true
         }.fixedSize()
+      }
+      HStack(spacing: 6) {
+        Text("SHOW").font(.lcars(15)).foregroundStyle(Color.accDim).padding(.trailing, 2)
+        filterChip("ALL", value: -1, color: .accLavender, key: "0")
+        ForEach(Array((1...5).reversed()), id: \.self) { level in
+          filterChip("OP\(level)", value: level, color: .op(level), key: Character("\(level)"))
+        }
+        filterChip("–", value: 0, color: .accDim, key: nil).help("Not scored")
+        Spacer(minLength: 0)
       }
       HStack(spacing: 10) {
         Text("SORT").font(.lcars(15)).foregroundStyle(Color.accDim)
@@ -222,7 +312,10 @@ struct CommsView: View {
         }
       }
       if people.isEmpty {
-        Text(quarantine ? "No quarantined communications." : "No communications yet.")
+        Text(
+          levelFilter >= 0
+            ? "Nothing \(levelFilter == 0 ? "unscored" : "at OP\(levelFilter)") \(quarantine ? "in quarantine" : "in the inbox")."
+            : quarantine ? "No quarantined communications." : "No communications yet.")
           .font(.acc(18)).foregroundStyle(Color.accDim)
       }
       Spacer(minLength: 0)
@@ -317,6 +410,12 @@ struct CommsView: View {
           Text("·  \(item.date.accClock())").font(.acc(21, weight: .medium)).foregroundStyle(
             Color.accLavender)
           Spacer()
+          if let code = item.oneTimeCode {
+            Label(code, systemImage: "key.fill")
+              .font(.system(size: 16, weight: .bold, design: .monospaced)).foregroundStyle(.black)
+              .padding(.horizontal, 10).padding(.vertical, 3)
+              .background(Color.accPeach, in: Capsule()).textSelection(.enabled)
+          }
           OPBadge(level: item.classification?.level)
         }.padding(.top, 10)
         VStack(alignment: .leading, spacing: 8) {

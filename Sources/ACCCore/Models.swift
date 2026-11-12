@@ -142,6 +142,8 @@ public struct Communication: Codable, Identifiable, Equatable, Sendable {
   public var trashed = false
   /// Older than the hot window: body lives in an archive pack until retrieved.
   public var archived = false
+  /// A one-time verification code found in the message (kept in the intake ledger).
+  public var oneTimeCode: String? = nil
   public init(
     id: String = UUID().uuidString, name: String, address: String, channel: Channel,
     subject: String = "", body: String, date: Date = .now, classification: Classification? = nil,
@@ -367,6 +369,9 @@ public struct IntakeLedger: Codable, Equatable, Sendable {
   public var seenIDs: Set<String> = []
   public var quarantinedIDs: Set<String> = []
   public var classifications: [String: Classification] = [:]
+  /// One-time codes found per message, and messages Allen said hold no code.
+  public var codes: [String: String] = [:]
+  public var dismissedCodes: Set<String> = []
   public init() {}
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -376,6 +381,8 @@ public struct IntakeLedger: Codable, Equatable, Sendable {
     quarantinedIDs = try c.decodeIfPresent(Set<String>.self, forKey: .quarantinedIDs) ?? []
     classifications =
       try c.decodeIfPresent([String: Classification].self, forKey: .classifications) ?? [:]
+    codes = try c.decodeIfPresent([String: String].self, forKey: .codes) ?? [:]
+    dismissedCodes = try c.decodeIfPresent(Set<String>.self, forKey: .dismissedCodes) ?? []
     // Ledgers written before multi-account support baselined Apple Mail only.
     if baselineEstablished { baselinedSources.insert(Self.appleMail) }
   }
