@@ -137,6 +137,7 @@ struct SettingsView: View {
   var unsaved: Bool {
     var pending = draft
     pending.knownAddresses = parsedKnown
+    pending.senderLevels = model.policy.senderLevels  // edited in COMMS, not here
     return pending != model.policy
   }
   func runTest() {

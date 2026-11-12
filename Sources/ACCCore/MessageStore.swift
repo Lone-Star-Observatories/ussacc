@@ -132,6 +132,12 @@ public final class MessageStore: @unchecked Sendable {
       "SELECT \(Self.columns) FROM messages \(includeTrashed ? "" : "WHERE trashed=0") ORDER BY date DESC LIMIT ?"
     ) { sqlite3_bind_int($0, 1, Int32(limit)) }
   }
+  /// Every stored, untrashed message from one sender (address compared case-insensitively).
+  public func messages(from address: String) throws -> [Communication] {
+    try query(
+      "SELECT \(Self.columns) FROM messages WHERE lower(trim(address))=? AND trashed=0 ORDER BY date DESC"
+    ) { self.bind($0, 1, address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+  }
   public func message(id: String) throws -> Communication? {
     try query("SELECT \(Self.columns) FROM messages WHERE id=?") { self.bind($0, 1, id) }.first
   }

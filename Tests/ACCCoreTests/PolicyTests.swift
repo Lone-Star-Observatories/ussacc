@@ -23,6 +23,35 @@ import Testing
         == PolicyDecision(disposition: .keep, highlight: false, notify: false))
     #expect(PolicyDecision.evaluate(item(level: 1), policy: policy).disposition == .delete)
   }
+  @Test func manualScoreAppliesSavedRuleEvenWhenAutoFilterIsOff() {
+    var policy = FilterPolicy()
+    policy.rules = [
+      LevelRule(level: 1, disposition: .delete), LevelRule(level: 2, disposition: .quarantine),
+      LevelRule(level: 3), LevelRule(level: 4), LevelRule(level: 5, disposition: .delete),
+    ]
+    #expect(!policy.enabled)
+    #expect(PolicyDecision.manual(level: 1, policy: policy) == .delete)
+    #expect(PolicyDecision.manual(level: 2, policy: policy) == .quarantine)
+    #expect(PolicyDecision.manual(level: 3, policy: policy) == .keep)
+    #expect(PolicyDecision.manual(level: 5, policy: policy) == .keep)
+    #expect(PolicyDecision.manual(level: 0, policy: policy) == .keep)
+  }
+  @Test func senderRulesNormalizeAddressesAndSurviveOlderPolicyFiles() throws {
+    var policy = FilterPolicy()
+    policy.setSenderLevel(2, for: "  News@Shop.COM ")
+    #expect(policy.senderLevel("news@shop.com") == 2)
+    #expect(policy.senderLevel("other@shop.com") == nil)
+    policy.setSenderLevel(9, for: "news@shop.com")
+    #expect(policy.senderLevel("news@shop.com") == nil)
+    policy.setSenderLevel(1, for: "spam@x.io")
+    let round = try JSONDecoder().decode(FilterPolicy.self, from: JSONEncoder().encode(policy))
+    #expect(round == policy)
+    let legacy = Data(#"{"enabled":true,"knownAddresses":["a@b.c"],"rules":[]}"#.utf8)
+    let old = try JSONDecoder().decode(FilterPolicy.self, from: legacy)
+    #expect(old.enabled && old.knownAddresses == ["a@b.c"] && old.senderLevels.isEmpty)
+    #expect(Classification.senderRule(1).isAllenSet)
+    #expect(!Classification(level: 1, reason: "", source: "Apple Intelligence").isAllenSet)
+  }
   @Test func unknownSenderCannotReceiveOP5AndUndefinedLevelsStayUnscored() {
     #expect(Classification.validated(level: 5, reason: "Question", isKnown: false).level == nil)
     #expect(Classification.validated(level: 5, reason: "Direct question", isKnown: true).level == 5)

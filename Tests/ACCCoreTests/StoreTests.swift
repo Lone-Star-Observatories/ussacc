@@ -40,6 +40,19 @@ import Testing
     #expect((attributes[.posixPermissions] as? Int) == 0o600)
   }
 
+  @Test func messagesFromSenderMatchCaseInsensitivelyAndSkipTrash() throws {
+    let (store, folder) = try temporaryStore()
+    defer { try? FileManager.default.removeItem(at: folder) }
+    var other = message("o1", "Other")
+    other.address = "someone@else.com"
+    var shouted = message("j2", "Shouted", minutesAgo: 1)
+    shouted.address = "JAMIE@Example.com"
+    try store.insert([message("j1", "Hello", minutesAgo: 2), shouted, other, message("j3", "Gone")],
+      source: "applemail")
+    try store.updateState(id: "j3", trashed: true)
+    #expect(try store.messages(from: " jamie@example.com").map(\.id) == ["j2", "j1"])
+  }
+
   @Test func fullTextSearchAndTrashAndDemoExclusion() throws {
     let (store, folder) = try temporaryStore()
     defer { try? FileManager.default.removeItem(at: folder) }

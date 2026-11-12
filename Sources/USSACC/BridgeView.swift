@@ -230,14 +230,27 @@ struct ChannelTag: View {
 }
 struct OPBadge: View {
   let level: Int?
+  var size: CGFloat = 16
   var body: some View {
-    Text(level.map { "OP\($0)" } ?? "UNSCORED").font(.lcars(level == nil ? 13 : 16))
+    Text(level.map { "OP\($0)" } ?? "UNSCORED").font(.lcars(level == nil ? size - 3 : size))
       .foregroundStyle(level == nil ? Color.accText : .black)
       .padding(.horizontal, level == nil ? 9 : 14).padding(.vertical, 4)
-      .background(
-        level == 5 ? Color.accPeach : level == nil ? Color.accField : Color.accLavender,
-        in: Capsule()
-      ).overlay(Capsule().stroke(level == nil ? Color.accBorder : .clear))
+      .background(Color.op(level), in: Capsule())
+      .overlay(Capsule().stroke(level == nil ? Color.accBorder : .clear))
+      .fixedSize()
+  }
+}
+extension Color {
+  /// One colour per Operational Importance level so scores read at a glance.
+  static func op(_ level: Int?) -> Color {
+    switch level {
+    case 5: .accPeach
+    case 4: .accGreen
+    case 3: .accLavender
+    case 2: Color(red: 0.62, green: 0.58, blue: 0.80)
+    case 1: Color(red: 0.86, green: 0.36, blue: 0.38)
+    default: .accField
+    }
   }
 }
 extension Communication {
