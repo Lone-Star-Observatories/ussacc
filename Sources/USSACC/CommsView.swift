@@ -9,6 +9,17 @@ struct CommsView: View {
   @State private var draft = ""
   @State private var mode: Channel = .message
   @State private var destination = ""
+  /// List order: newest first, or grouped by OP level (highest first, newest within a level).
+  @AppStorage("commsGroupByLevel") private var groupByLevel = false
+  /// A sender rule that would quarantine or delete existing mail, waiting for confirmation.
+  @State private var pendingRule: PendingRule?
+  struct PendingRule: Identifiable {
+    let address: String
+    let level: Int
+    let count: Int
+    let disposition: Disposition
+    var id: String { "\(address)#\(level)" }
+  }
   var items: [Communication] {
     // Live searches use the local store's index, which also covers archived mail.
     if !search.isEmpty, let stored = model.searchStored(search) {
@@ -23,7 +34,16 @@ struct CommsView: View {
   }
   var people: [Communication] {
     var seen: Set<String> = []
-    return items.sorted { $0.date > $1.date }.filter { seen.insert($0.identity).inserted }
+    let latest = items.sorted { $0.date > $1.date }.filter { seen.insert($0.identity).inserted }
+    guard groupByLevel else { return latest }
+    // A conversation sits under its sender rule, else its newest message's level.
+    return latest.enumerated().sorted { a, b in
+      let (la, lb) = (level(of: a.element), level(of: b.element))
+      return la != lb ? la > lb : a.offset < b.offset
+    }.map(\.element)
+  }
+  func level(of item: Communication) -> Int {
+    model.policy.senderLevel(item.address) ?? item.classification?.level ?? 0
   }
   var thread: [Communication] {
     items.filter { $0.identity == model.selectedIdentity }.sorted { $0.date < $1.date }
@@ -33,6 +53,22 @@ struct CommsView: View {
     HStack(alignment: .top, spacing: 12) {
       list.frame(width: 450).frame(maxHeight: .infinity)
       conversation.frame(maxHeight: .infinity)
+    }.confirmationDialog(
+      pendingRule.map { "Mark all mail from \($0.address) as OP\($0.level)?" } ?? "",
+      isPresented: Binding(get: { pendingRule != nil }, set: { if !$0 { pendingRule = nil } }),
+      titleVisibility: .visible, presenting: pendingRule
+    ) { rule in
+      Button(
+        rule.disposition == .delete
+          ? "Mark OP\(rule.level) and move \(rule.count) to Trash"
+          : "Mark OP\(rule.level) and quarantine \(rule.count)",
+        role: rule.disposition == .delete ? .destructive : nil
+      ) { Task { await model.setSenderRule(rule.address, level: rule.level) } }
+      Button("Cancel", role: .cancel) {}
+    } message: { rule in
+      Text(
+        "Your OP\(rule.level) rule \(rule.disposition == .delete ? "moves mail to Trash" : "quarantines mail"). It applies to the \(rule.count) message\(rule.count == 1 ? "" : "s") already here and to every future message from this sender."
+      )
     }.sheet(isPresented: $newConversation) {
       ComposeSheet(
         mode: mode,
@@ -50,10 +86,18 @@ struct CommsView: View {
           newConversation = true
         }.fixedSize()
       }
+      HStack(spacing: 10) {
+        Text("SORT").font(.lcars(15)).foregroundStyle(Color.accDim)
+        ACCSegmented(
+          options: [("RECENT", false), ("OP LEVEL", true)], selection: $groupByLevel, height: 32)
+      }
       ScrollView {
         LazyVStack(spacing: 0) {
           ForEach(Array(people.enumerated()), id: \.element.id) { index, item in
             let isSelected = model.selectedIdentity == item.identity
+            if groupByLevel, index == 0 || level(of: people[index - 1]) != level(of: item) {
+              levelHeader(level(of: item))
+            }
             Button {
               model.selectedIdentity = item.identity
             } label: {
@@ -69,6 +113,11 @@ struct CommsView: View {
                   HStack {
                     Text(item.preview).font(.acc(19)).foregroundStyle(Color.accDim).lineLimit(1)
                     Spacer(minLength: 6)
+                    if model.policy.senderLevel(item.address) != nil {
+                      Image(systemName: "pin.fill").font(.system(size: 12))
+                        .foregroundStyle(Color.accLavender)
+                        .help("Sender rule: all mail from this address is scored this level")
+                    }
                     if item.channel == .email || item.classification != nil {
                       OPBadge(level: item.classification?.level, size: 15)
                     }
@@ -83,6 +132,7 @@ struct CommsView: View {
                     isSelected ? Color.accBorder : .clear, lineWidth: 1.2)
                 ).contentShape(Rectangle())
             }.buttonStyle(.plain)
+              .contextMenu { if item.channel == .email { senderMenu(item) } }
             if index < people.count - 1, !isSelected,
               people[index + 1].identity != model.selectedIdentity
             {
@@ -207,6 +257,54 @@ struct CommsView: View {
       }.padding(.bottom, 22)
     }
   }
+  func levelHeader(_ level: Int) -> some View {
+    HStack(spacing: 10) {
+      OPBadge(level: level == 0 ? nil : level, size: 15)
+      Text(level == 0 ? "Not scored" : model.policy.meaning(for: level)).font(.acc(15))
+        .foregroundStyle(Color.accDim).lineLimit(1)
+      Spacer()
+    }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 6)
+  }
+  /// Right-click menu on a conversation: a standing level for everything from this sender.
+  @ViewBuilder func senderMenu(_ item: Communication) -> some View {
+    let current = model.policy.senderLevel(item.address)
+    Section("All mail from \(item.address)") {
+      ForEach(Array((1...5).reversed()), id: \.self) { level in
+        Button {
+          requestRule(item.address, level: level)
+        } label: {
+          if current == level {
+            Label("Always OP\(level) · \(ruleAction(level))", systemImage: "checkmark")
+          } else {
+            Text("Always OP\(level) · \(ruleAction(level))")
+          }
+        }
+      }
+    }
+    if current != nil {
+      Divider()
+      Button("Remove sender rule") { Task { await model.setSenderRule(item.address, level: nil) } }
+    }
+  }
+  func ruleAction(_ level: Int) -> String {
+    switch PolicyDecision.manual(level: level, policy: model.policy) {
+    case .keep: "keep"
+    case .quarantine: "quarantine"
+    case .delete: "Trash"
+    }
+  }
+  /// Rules that quarantine or delete existing mail ask first; Keep applies at once.
+  func requestRule(_ address: String, level: Int) {
+    let disposition = PolicyDecision.manual(level: level, policy: model.policy)
+    let count = model.senderMessages(address).count
+    if disposition == .keep || count == 0 {
+      Task { await model.setSenderRule(address, level: level) }
+    } else {
+      pendingRule = PendingRule(
+        address: FilterPolicy.normalize(address), level: level, count: count,
+        disposition: disposition)
+    }
+  }
   /// Always-visible classification controls: the current score and reason, one chip per level
   /// (choosing one applies that level's saved rule), AI re-classify, restore and delete.
   func scoreBar(_ item: Communication) -> some View {
@@ -229,7 +327,7 @@ struct CommsView: View {
           }.buttonStyle(.plain).help(scoreHelp(level))
         }
         Spacer(minLength: 8)
-        Button { Task { await model.classify(id: item.id) } } label: {
+        Button { Task { await model.classify(id: item.id, askModel: true) } } label: {
           Label("AI", systemImage: "sparkles").font(.lcars(15))
         }.buttonStyle(.plain).foregroundStyle(Color.accLavender)
           .help("Ask the on-device model to score this message (no rule is applied)")
@@ -245,6 +343,12 @@ struct CommsView: View {
               .background(Color.op(1), in: Capsule()).contentShape(Capsule())
           }.buttonStyle(.plain).help("Mark OP1 and move to the account's Trash")
         }
+      }
+      if let ruled = model.policy.senderLevel(item.address),
+        item.classification?.source != Classification.senderRuleSource
+      {
+        Text("Sender rule is OP\(ruled); this message was set separately.").font(.acc(15))
+          .foregroundStyle(Color.accLavender)
       }
       if let classification = item.classification {
         Text("\(classification.reason) · \(classification.source)").font(.acc(15))

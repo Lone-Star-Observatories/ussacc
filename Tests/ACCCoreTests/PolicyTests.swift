@@ -36,6 +36,22 @@ import Testing
     #expect(PolicyDecision.manual(level: 5, policy: policy) == .keep)
     #expect(PolicyDecision.manual(level: 0, policy: policy) == .keep)
   }
+  @Test func senderRulesNormalizeAddressesAndSurviveOlderPolicyFiles() throws {
+    var policy = FilterPolicy()
+    policy.setSenderLevel(2, for: "  News@Shop.COM ")
+    #expect(policy.senderLevel("news@shop.com") == 2)
+    #expect(policy.senderLevel("other@shop.com") == nil)
+    policy.setSenderLevel(9, for: "news@shop.com")
+    #expect(policy.senderLevel("news@shop.com") == nil)
+    policy.setSenderLevel(1, for: "spam@x.io")
+    let round = try JSONDecoder().decode(FilterPolicy.self, from: JSONEncoder().encode(policy))
+    #expect(round == policy)
+    let legacy = Data(#"{"enabled":true,"knownAddresses":["a@b.c"],"rules":[]}"#.utf8)
+    let old = try JSONDecoder().decode(FilterPolicy.self, from: legacy)
+    #expect(old.enabled && old.knownAddresses == ["a@b.c"] && old.senderLevels.isEmpty)
+    #expect(Classification.senderRule(1).isAllenSet)
+    #expect(!Classification(level: 1, reason: "", source: "Apple Intelligence").isAllenSet)
+  }
   @Test func unknownSenderCannotReceiveOP5AndUndefinedLevelsStayUnscored() {
     #expect(Classification.validated(level: 5, reason: "Question", isKnown: false).level == nil)
     #expect(Classification.validated(level: 5, reason: "Direct question", isKnown: true).level == 5)

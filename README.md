@@ -54,6 +54,10 @@ The central COMMS filter uses Apple's on-device [Foundation Models](https://deve
 
 In **Comms**, every email shows its score and a row of **OP1–OP5** chips. Picking a level records a manual correction and applies that level's saved rule immediately, even with automatic filtering off (Quarantine → local quarantine, Delete → Trash, Keep → back to the inbox; OP5 is always kept). **DELETE** records the message as OP1 and moves it to Trash whatever the OP1 rule says. **AI** re-scores with the on-device model without applying a rule. Hover a chip to see its meaning and what your rule will do.
 
+**Sender rules:** right-click a conversation and choose **Always OP1–OP5** to score every message from that exact address — everything already stored and everything that arrives later — at that level, instead of asking the model. Existing mail gets the level's saved rule at once (Keep / Quarantine / Trash; a confirmation shows the count before anything is quarantined or trashed), and new arrivals get it even when automatic filtering is off. A pin marks ruled senders; **Remove sender rule** clears the rule and the scores it set. Rules are stored in `policy.json`. A per-message chip still overrides the rule for that one message, and **AI** shows the model's opinion regardless.
+
+**Sort:** RECENT lists conversations newest first; **OP LEVEL** groups them under OP5 → OP1 → Not scored headers (by sender rule, else the newest message's score), newest first within each level.
+
 Edit each meaning in the Spam Filter table and Save Rules; the classifier is instructed with your definitions. A blank meaning disables that level.
 
 Under **Dev → Settings → Spam Filter**, enter exact known sender addresses, enable incoming classification, and save per-level actions. Each level has a disposition (Keep / local Quarantine / Apple Mail Trash) and independent Highlight / Push controls. Rules initially keep everything; automatic deletion is off. Unscored, invalid, or unavailable-model results are kept visible. Automatic OP5 requires an exact configured sender address, not the display name; this is contact matching, not cryptographic sender authentication.

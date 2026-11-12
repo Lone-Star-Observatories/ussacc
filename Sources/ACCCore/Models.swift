@@ -46,7 +46,37 @@ public struct FilterPolicy: Codable, Equatable, Sendable {
   public var enabled = false
   public var knownAddresses: [String] = []
   public var rules: [LevelRule] = (1...5).map { LevelRule(level: $0, highlight: $0 == 5) }
+  /// Allen's standing sender rules: normalized address → OP level. Every message from that
+  /// address, past and future, takes this level instead of a model score.
+  public var senderLevels: [String: Int] = [:]
   public init() {}
+  private enum CodingKeys: String, CodingKey { case enabled, knownAddresses, rules, senderLevels }
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+    knownAddresses = try c.decodeIfPresent([String].self, forKey: .knownAddresses) ?? []
+    rules =
+      try c.decodeIfPresent([LevelRule].self, forKey: .rules)
+      ?? (1...5).map { LevelRule(level: $0, highlight: $0 == 5) }
+    senderLevels = try c.decodeIfPresent([String: Int].self, forKey: .senderLevels) ?? [:]
+  }
+  public static func normalize(_ address: String) -> String {
+    address.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+  /// The standing level for this sender, if Allen set one.
+  public func senderLevel(_ address: String) -> Int? {
+    let key = Self.normalize(address)
+    guard !key.isEmpty, let level = senderLevels[key], (1...5).contains(level) else { return nil }
+    return level
+  }
+  /// Sets (1...5) or clears (nil) the standing level for a sender.
+  public mutating func setSenderLevel(_ level: Int?, for address: String) {
+    let key = Self.normalize(address)
+    guard !key.isEmpty else { return }
+    if let level, (1...5).contains(level) { senderLevels[key] = level } else {
+      senderLevels[key] = nil
+    }
+  }
   public func rule(for level: Int?) -> LevelRule {
     guard let level, (1...5).contains(level) else { return LevelRule(level: 0) }
     var rule = rules.first { $0.level == level } ?? LevelRule(level: level)
@@ -78,6 +108,15 @@ public struct Classification: Codable, Equatable, Sendable {
     self.source = source
     self.date = date
   }
+  public static let senderRuleSource = "Sender rule"
+  public static let manualSource = "Manual override"
+  /// The classification every message from a ruled sender receives.
+  public static func senderRule(_ level: Int) -> Classification {
+    .init(level: level, reason: "Sender rule: every message from this address is OP\(level).",
+      source: senderRuleSource)
+  }
+  /// Set by Allen (per message or per sender); automatic scoring never overwrites these.
+  public var isAllenSet: Bool { source == Self.manualSource || source == Self.senderRuleSource }
   public static func validated(
     level: Int, reason: String, isKnown: Bool, allowed: Set<Int> = [1, 2, 3, 4, 5]
   ) -> Classification {

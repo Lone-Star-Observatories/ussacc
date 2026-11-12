@@ -267,6 +267,9 @@ enum Station: String, CaseIterable, Identifiable {
     } catch { status = "Unable to save journey: \(error.localizedDescription)" }
   }
   func savePolicy(_ value: FilterPolicy) {
+    var value = value
+    // Settings edits levels and contacts; sender rules are owned by COMMS.
+    value.senderLevels = policy.senderLevels
     do {
       try LocalPersistence.save(value, to: folder.appendingPathComponent("policy.json"))
       policy = value
@@ -441,8 +444,11 @@ enum Station: String, CaseIterable, Identifiable {
       }
       for item in fetched where arrivals.contains(item.id) {
         guard token == generation, !demo, !Task.isCancelled else { return }
-        // Apply only after a successful model classification using the current saved policy.
-        if policy.enabled { await classify(id: item.id, applyActions: true, token: token) }
+        // Sender rules always apply; otherwise act only after a successful model classification
+        // using the current saved policy.
+        if policy.enabled || policy.senderLevel(item.address) != nil {
+          await classify(id: item.id, applyActions: true, token: token)
+        }
         guard token == generation else { return }
       }
     }
@@ -456,17 +462,29 @@ enum Station: String, CaseIterable, Identifiable {
       : "Mail checked \(Date.now.accClock()) · \(sources) source\(sources == 1 ? "" : "s")"
         + (failures.isEmpty ? "" : " · failed: \(failures.joined(separator: ", "))")
   }
-  func classify(id: String, applyActions: Bool = false, token: Int? = nil) async {
+  /// Scores one message. A sender rule wins over the model unless `askModel` is set (the AI
+  /// button), and a sender rule's level applies its saved rule even with automatic filtering off.
+  func classify(
+    id: String, applyActions: Bool = false, token: Int? = nil, askModel: Bool = false
+  ) async {
     guard var item = communications.first(where: { $0.id == id }) else { return }
     if item.archived, let body = try? store?.body(id: id, restore: false) { item.body = body }
     let context = token ?? generation
     let savedPolicy = policy
-    let result = await Intelligence.classify(
-      item, known: policy.isKnown(item.address) || (item.isDemo && item.name == "Jamie"),
-      policy: savedPolicy)
+    let ruled = askModel ? nil : savedPolicy.senderLevel(item.address)
+    let result: Classification
+    if let ruled {
+      result = .senderRule(ruled)
+    } else {
+      result = await Intelligence.classify(
+        item, known: policy.isKnown(item.address) || (item.isDemo && item.name == "Jamie"),
+        policy: savedPolicy)
+    }
     guard context == generation, let index = communications.firstIndex(where: { $0.id == id })
     else { return }
-    if applyActions && communications[index].classification?.source == "Manual override" { return }
+    if applyActions && communications[index].classification?.source == Classification.manualSource {
+      return
+    }
     communications[index].classification = result
     if !item.isDemo {
       ledger.classifications[id] = result
@@ -474,7 +492,11 @@ enum Station: String, CaseIterable, Identifiable {
       try? store?.updateState(id: id, classification: .some(result))
     }
     guard applyActions, !item.isDemo, !demo, savedPolicy == policy else { return }
-    let decision = PolicyDecision.evaluate(communications[index], policy: policy)
+    var decision = PolicyDecision.evaluate(communications[index], policy: policy)
+    if let ruled {
+      decision.disposition = PolicyDecision.manual(level: ruled, policy: policy)
+      decision.notify = policy.rule(for: ruled).push
+    }
     do {
       switch decision.disposition {
       case .keep: break
@@ -580,7 +602,7 @@ enum Station: String, CaseIterable, Identifiable {
   /// Live messages a retroactive run would score; manual corrections are never re-scored.
   func retroactiveTargets(rescore: Bool) -> [Communication] {
     communications.filter {
-      !$0.isDemo && !$0.trashed && $0.classification?.source != "Manual override"
+      !$0.isDemo && !$0.trashed && $0.classification?.isAllenSet != true
         && (rescore || $0.classification?.level == nil)
     }
   }
@@ -613,7 +635,6 @@ enum Station: String, CaseIterable, Identifiable {
     defer { retroProgress = nil }
     var quarantined = 0
     var trashed = 0
-    var failures: [String] = []
     for entry in actions where entry.disposition == .quarantine {
       guard let index = current(entry) else { continue }
       communications[index].quarantined = true
@@ -626,11 +647,28 @@ enum Station: String, CaseIterable, Identifiable {
     // OP5 can never be deleted, whatever a stored rule says.
     let deletes = actions.filter { $0.disposition == .delete && $0.level != 5 && current($0) != nil }
       .map(\.id)
+    let (moved, failures) = await trashBatch(deletes, token: token) { done in
+      self.retroProgress = ("Applying", quarantined + done, actions.count)
+    }
+    trashed = moved
+    let summary =
+      "Applied rules to existing mail · \(quarantined) quarantined · \(trashed) moved to Trash"
+      + (failures.isEmpty ? "" : " · kept after errors: \(failures.joined(separator: "; "))")
+    status = summary
+    return summary
+  }
+  /// Moves messages to their account's Trash, one connection per account. Returns how many
+  /// moved and a description of each account that failed (its messages are kept).
+  private func trashBatch(
+    _ ids: [String], token: Int, progress: (Int) -> Void = { _ in }
+  ) async -> (Int, [String]) {
     var groups: [String: [String]] = [:]
-    for id in deletes {
+    for id in ids {
       let key = id.hasPrefix("imap:") ? String(id.split(separator: ":")[1]) : IntakeLedger.appleMail
       groups[key, default: []].append(id)
     }
+    var trashed = 0
+    var failures: [String] = []
     for (key, ids) in groups {
       guard token == generation, !demo else { break }
       do {
@@ -653,13 +691,81 @@ enum Station: String, CaseIterable, Identifiable {
         let name = accounts.first { $0.id == key }?.title ?? "Apple Mail"
         failures.append("\(name): \(error.localizedDescription)")
       }
-      retroProgress = ("Applying", quarantined + trashed, actions.count)
+      progress(trashed)
     }
-    let summary =
-      "Applied rules to existing mail · \(quarantined) quarantined · \(trashed) moved to Trash"
-      + (failures.isEmpty ? "" : " · kept after errors: \(failures.joined(separator: "; "))")
-    status = summary
-    return summary
+    return (trashed, failures)
+  }
+  // MARK: Sender rules
+  /// Untrashed messages from a sender: those loaded now plus any only in the local store.
+  func senderMessages(_ address: String) -> [Communication] {
+    let key = FilterPolicy.normalize(address)
+    var found = communications.filter { !$0.trashed && FilterPolicy.normalize($0.address) == key }
+    if !demo, let stored = try? store?.messages(from: key) {
+      let loaded = Set(found.map(\.id))
+      found += stored.filter { !loaded.contains($0.id) }
+    }
+    return found
+  }
+  /// Classifies every message from `address`, past and future, as `level` (nil removes the
+  /// rule). Existing mail gets that level's saved rule straight away: Keep returns it to the
+  /// inbox, Quarantine quarantines it, Delete moves it to Trash. OP5 is always kept.
+  func setSenderRule(_ address: String, level: Int?) async {
+    let key = FilterPolicy.normalize(address)
+    guard !key.isEmpty else { return }
+    var updated = policy
+    updated.setSenderLevel(level, for: key)
+    do {
+      try LocalPersistence.save(updated, to: folder.appendingPathComponent("policy.json"))
+    } catch {
+      status = "Couldn't save the sender rule: \(error.localizedDescription)"
+      return
+    }
+    policy = updated
+    let targets = senderMessages(key)
+    // Bring stored-only messages into the list so their new state shows and can be acted on.
+    let loaded = Set(communications.map(\.id))
+    communications += targets.filter { !loaded.contains($0.id) }
+    communications.sort { $0.date > $1.date }
+    guard let level else {
+      // Scores that came from the rule are cleared; manual and model scores are left alone.
+      for item in targets where item.classification?.source == Classification.senderRuleSource {
+        setClassification(item.id, nil, persist: false)
+      }
+      persistLedger()
+      status = "Sender rule removed for \(key) · its messages are unscored until classified again"
+      return
+    }
+    for item in targets { setClassification(item.id, .senderRule(level), persist: false) }
+    persistLedger()
+    let label = "\(key) → OP\(level) for all mail"
+    switch PolicyDecision.manual(level: level, policy: policy) {
+    case .keep:
+      for item in targets where item.quarantined { restore(item.id) }
+      status = "\(label) · \(targets.count) message\(targets.count == 1 ? "" : "s") updated"
+    case .quarantine:
+      for item in targets where !item.quarantined { quarantine(item.id) }
+      status = "\(label) · \(targets.count) quarantined"
+    case .delete:
+      let demoIDs = targets.filter(\.isDemo).map(\.id)
+      for id in demoIDs {
+        if let i = communications.firstIndex(where: { $0.id == id }) { communications[i].trashed = true }
+      }
+      let (moved, failures) = await trashBatch(
+        targets.filter { !$0.isDemo }.map(\.id), token: generation)
+      status =
+        "\(label) · \(moved + demoIDs.count) moved to Trash"
+        + (failures.isEmpty ? "" : " · kept after errors: \(failures.joined(separator: "; "))")
+    }
+    if let first = targets.first { reselect(after: first.id, inQuarantine: first.quarantined) }
+  }
+  private func setClassification(_ id: String, _ value: Classification?, persist: Bool = true) {
+    if let index = communications.firstIndex(where: { $0.id == id }) {
+      communications[index].classification = value
+      if communications[index].isDemo { return }
+    }
+    ledger.classifications[id] = value
+    if persist { persistLedger() }
+    try? store?.updateState(id: id, classification: .some(value))
   }
   /// A score set by hand in COMMS. The saved rule for that level is applied straight away, even
   /// when automatic filtering is off: Quarantine moves it to local quarantine, Delete moves it to
@@ -685,7 +791,7 @@ enum Station: String, CaseIterable, Identifiable {
     await moveToTrash(id, label: "Deleted")
   }
   private func setManual(_ index: Int, level: Int, reason: String) {
-    let result = Classification(level: level, reason: reason, source: "Manual override")
+    let result = Classification(level: level, reason: reason, source: Classification.manualSource)
     communications[index].classification = result
     let id = communications[index].id
     if !communications[index].isDemo {
