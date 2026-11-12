@@ -48,6 +48,13 @@ struct CommsView: View {
       return la != lb ? la > lb : a.offset < b.offset
     }.map(\.element)
   }
+  enum TrashState { case none, some, all }
+  /// Whether this conversation's visible messages are on their way to Trash.
+  func trashState(_ item: Communication) -> TrashState {
+    let mine = items.filter { $0.identity == item.identity }
+    let moving = mine.filter { model.trashing.contains($0.id) }.count
+    return moving == 0 ? .none : moving == mine.count ? .all : .some
+  }
   func level(of item: Communication) -> Int {
     model.policy.senderLevel(item.address) ?? item.classification?.level ?? 0
   }
@@ -139,9 +146,21 @@ struct CommsView: View {
         ACCSegmented(
           options: [("RECENT", false), ("OP LEVEL", true)], selection: $groupByLevel, height: 32)
       }
+      if let run = model.trashProgress {
+        HStack(spacing: 10) {
+          ProgressView().controlSize(.small)
+          Text("Moving to Trash · \(run.done) of \(run.total)").font(.acc(16))
+          Spacer()
+          ProgressView(value: Double(run.done), total: Double(max(run.total, 1))).frame(width: 110)
+        }.foregroundStyle(Color.accText).padding(.horizontal, 14).padding(.vertical, 8)
+          .background(Color.op(1).opacity(0.22), in: RoundedRectangle(cornerRadius: 10))
+          .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.op(1), lineWidth: 1))
+          .transition(.opacity)
+      }
       ScrollView {
         LazyVStack(spacing: 0) {
           ForEach(Array(people.enumerated()), id: \.element.id) { index, item in
+            let moving = trashState(item)
             let isSelected = selection.contains(item.identity)
             if groupByLevel, index == 0 || level(of: people[index - 1]) != level(of: item) {
               levelHeader(level(of: item))
@@ -159,8 +178,14 @@ struct CommsView: View {
                     Text(item.date.accRelative).font(.acc(18)).frame(minWidth: 50, alignment: .trailing)
                   }
                   HStack {
-                    Text(item.preview).font(.acc(19)).foregroundStyle(Color.accDim).lineLimit(1)
+                    if moving == .all {
+                      Label("Moving to Trash…", systemImage: "trash").font(.acc(19))
+                        .foregroundStyle(Color.op(1)).lineLimit(1)
+                    } else {
+                      Text(item.preview).font(.acc(19)).foregroundStyle(Color.accDim).lineLimit(1)
+                    }
                     Spacer(minLength: 6)
+                    if moving != .none { ProgressView().controlSize(.small) }
                     if model.policy.senderLevel(item.address) != nil {
                       Image(systemName: "pin.fill").font(.system(size: 12))
                         .foregroundStyle(Color.accLavender)
@@ -179,6 +204,7 @@ struct CommsView: View {
                   RoundedRectangle(cornerRadius: 12).stroke(
                     isSelected ? Color.accBorder : .clear, lineWidth: 1.2)
                 ).contentShape(Rectangle())
+                .opacity(moving == .all ? 0.5 : 1)
             }.buttonStyle(.plain)
               .contextMenu {
                 // Right-clicking inside a multi-selection acts on all of it.
@@ -301,8 +327,17 @@ struct CommsView: View {
           } else {
             Text(item.body).font(.acc(20)).textSelection(.enabled)
           }
-          scoreBar(item)
+          if model.trashing.contains(item.id) {
+            ACCDivider()
+            HStack(spacing: 10) {
+              ProgressView().controlSize(.small)
+              Text("Moving to Trash…").font(.lcars(16)).foregroundStyle(Color.op(1))
+            }
+          } else {
+            scoreBar(item)
+          }
         }.padding(.horizontal, 26).padding(.vertical, 16)
+          .opacity(model.trashing.contains(item.id) ? 0.55 : 1)
           .frame(maxWidth: .infinity, alignment: .leading)
           .background(Color.accCard, in: RoundedRectangle(cornerRadius: 12))
           .overlay(

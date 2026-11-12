@@ -657,11 +657,26 @@ enum Station: String, CaseIterable, Identifiable {
     status = summary
     return summary
   }
-  /// Moves messages to their account's Trash, one connection per account. Returns how many
-  /// moved and a description of each account that failed (its messages are kept).
+  /// Messages currently on their way to Trash. The list shows them as "moving to Trash" so a
+  /// slow server still gives immediate feedback; each leaves the view as soon as it's moved.
+  @Published var trashing: Set<String> = []
+  /// Progress of the current Trash run, for the list's banner.
+  @Published var trashProgress: (done: Int, total: Int)?
+  /// Moves messages to their account's Trash, one connection per IMAP account (Apple Mail one at
+  /// a time). Returns how many moved and a description of each account that failed (its
+  /// messages are kept and reappear as normal).
   private func trashBatch(
     _ ids: [String], token: Int, progress: (Int) -> Void = { _ in }
   ) async -> (Int, [String]) {
+    let ids = ids.filter { !trashing.contains($0) }
+    guard !ids.isEmpty else { return (0, []) }
+    trashing.formUnion(ids)
+    let total = (trashProgress?.total ?? 0) + ids.count
+    trashProgress = (trashProgress?.done ?? 0, total)
+    defer {
+      trashing.subtract(ids)
+      if trashing.isEmpty { trashProgress = nil }
+    }
     var groups: [String: [String]] = [:]
     for id in ids {
       let key = id.hasPrefix("imap:") ? String(id.split(separator: ":")[1]) : IntakeLedger.appleMail
@@ -669,29 +684,47 @@ enum Station: String, CaseIterable, Identifiable {
     }
     var trashed = 0
     var failures: [String] = []
+    func moved(_ done: [String]) {
+      for id in done {
+        try? store?.updateState(id: id, trashed: true)
+        if let index = communications.firstIndex(where: { $0.id == id }) {
+          communications[index].trashed = true
+        }
+      }
+      trashing.subtract(done)
+      trashed += done.count
+      if let current = trashProgress { trashProgress = (current.done + done.count, current.total) }
+      progress(trashed)
+    }
     for (key, ids) in groups {
       guard token == generation, !demo else { break }
-      do {
-        if key == IntakeLedger.appleMail {
-          for id in ids { try await mail.trash(id: id) }
-        } else {
+      let name = accounts.first { $0.id == key }?.title ?? "Apple Mail"
+      if key == IntakeLedger.appleMail {
+        // One message at a time, so each disappears as soon as Mail has moved it.
+        var firstError: Error?
+        for id in ids {
+          guard token == generation, !demo else { break }
+          do {
+            try await mail.trash(id: id)
+            moved([id])
+          } catch {
+            if firstError == nil { firstError = error }
+            trashing.remove(id)
+          }
+        }
+        if let firstError { failures.append("\(name): \(firstError.localizedDescription)") }
+      } else {
+        do {
           guard let account = accounts.first(where: { $0.id == key }),
             let password = password(for: account)
           else { throw IntegrationError.message("account is no longer configured") }
           try await IMAPMailSource.trash(account, password: password, ids: ids)
+          moved(ids)
+        } catch {
+          trashing.subtract(ids)
+          failures.append("\(name): \(error.localizedDescription)")
         }
-        for id in ids {
-          try? store?.updateState(id: id, trashed: true)
-          if let index = communications.firstIndex(where: { $0.id == id }) {
-            communications[index].trashed = true
-          }
-        }
-        trashed += ids.count
-      } catch {
-        let name = accounts.first { $0.id == key }?.title ?? "Apple Mail"
-        failures.append("\(name): \(error.localizedDescription)")
       }
-      progress(trashed)
     }
     return (trashed, failures)
   }
@@ -780,7 +813,9 @@ enum Station: String, CaseIterable, Identifiable {
   /// levels use their saved rule (Quarantine quarantines, Keep returns them to the inbox).
   /// OP5 is always kept. If Trash fails the messages stay visible and the status says why.
   func applyLevel(_ ids: [String], level: Int, reason: String = "Manual correction by Allen.") async {
-    let targets = communications.filter { ids.contains($0.id) && !$0.trashed }
+    let targets = communications.filter {
+      ids.contains($0.id) && !$0.trashed && !trashing.contains($0.id)
+    }
     guard !targets.isEmpty else { return }
     let focus = selectedIdentity
     for item in targets {
