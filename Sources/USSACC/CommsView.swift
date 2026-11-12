@@ -1,4 +1,5 @@
 import ACCCore
+import AppKit
 import SwiftUI
 
 struct CommsView: View {
@@ -11,14 +12,19 @@ struct CommsView: View {
   @State private var destination = ""
   /// List order: newest first, or grouped by OP level (highest first, newest within a level).
   @AppStorage("commsGroupByLevel") private var groupByLevel = false
-  /// A sender rule that would quarantine or delete existing mail, waiting for confirmation.
-  @State private var pendingRule: PendingRule?
-  struct PendingRule: Identifiable {
-    let address: String
-    let level: Int
-    let count: Int
-    let disposition: Disposition
-    var id: String { "\(address)#\(level)" }
+  /// Conversations picked with ⌘-click or Shift-click (sender identities), and the row a
+  /// Shift-click range starts from. One picked row is the ordinary single selection.
+  @State private var picked: Set<String> = []
+  @State private var anchor: String?
+  /// An action that would quarantine or delete several messages, waiting for confirmation.
+  @State private var pending: PendingAction?
+  struct PendingAction: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    let button: String
+    let destructive: Bool
+    let run: @MainActor () async -> Void
   }
   var items: [Communication] {
     // Live searches use the local store's index, which also covers archived mail.
@@ -45,6 +51,45 @@ struct CommsView: View {
   func level(of item: Communication) -> Int {
     model.policy.senderLevel(item.address) ?? item.classification?.level ?? 0
   }
+  /// The conversations currently selected: the picked set while it holds more than one visible
+  /// conversation, otherwise the focused one.
+  var selection: Set<String> {
+    let live = picked.intersection(people.map(\.identity))
+    if live.count > 1 { return live }
+    return model.selectedIdentity.map { [$0] } ?? []
+  }
+  var chosen: [Communication] { people.filter { selection.contains($0.identity) } }
+  /// Messages in the current view (inbox or quarantine, and search) from these conversations.
+  func messages(in conversations: [Communication]) -> [Communication] {
+    let ids = Set(conversations.map(\.identity))
+    return items.filter { ids.contains($0.identity) }
+  }
+  /// Click selects one; ⌘-click adds or removes; Shift-click selects the range from the last
+  /// clicked row (⌘-Shift adds the range).
+  func click(_ item: Communication) {
+    let flags = NSEvent.modifierFlags
+    let id = item.identity
+    if flags.contains(.shift), let anchor,
+      let a = people.firstIndex(where: { $0.identity == anchor }),
+      let b = people.firstIndex(where: { $0.identity == id })
+    {
+      let range = Set(people[min(a, b)...max(a, b)].map(\.identity))
+      picked = flags.contains(.command) ? selection.union(range) : range
+    } else if flags.contains(.command) {
+      var current = selection
+      if current.contains(id), current.count > 1 { current.remove(id) } else { current.insert(id) }
+      picked = current
+      anchor = id
+      if !current.contains(id) {
+        model.selectedIdentity = people.first { current.contains($0.identity) }?.identity
+        return
+      }
+    } else {
+      picked = [id]
+      anchor = id
+    }
+    model.selectedIdentity = id
+  }
   var thread: [Communication] {
     items.filter { $0.identity == model.selectedIdentity }.sorted { $0.date < $1.date }
   }
@@ -54,21 +99,24 @@ struct CommsView: View {
       list.frame(width: 450).frame(maxHeight: .infinity)
       conversation.frame(maxHeight: .infinity)
     }.confirmationDialog(
-      pendingRule.map { "Mark all mail from \($0.address) as OP\($0.level)?" } ?? "",
-      isPresented: Binding(get: { pendingRule != nil }, set: { if !$0 { pendingRule = nil } }),
-      titleVisibility: .visible, presenting: pendingRule
-    ) { rule in
-      Button(
-        rule.disposition == .delete
-          ? "Mark OP\(rule.level) and move \(rule.count) to Trash"
-          : "Mark OP\(rule.level) and quarantine \(rule.count)",
-        role: rule.disposition == .delete ? .destructive : nil
-      ) { Task { await model.setSenderRule(rule.address, level: rule.level) } }
+      pending?.title ?? "",
+      isPresented: Binding(get: { pending != nil }, set: { if !$0 { pending = nil } }),
+      titleVisibility: .visible, presenting: pending
+    ) { action in
+      Button(action.button, role: action.destructive ? .destructive : nil) {
+        Task { await action.run() }
+      }
       Button("Cancel", role: .cancel) {}
-    } message: { rule in
-      Text(
-        "Your OP\(rule.level) rule \(rule.disposition == .delete ? "moves mail to Trash" : "quarantines mail"). It applies to the \(rule.count) message\(rule.count == 1 ? "" : "s") already here and to every future message from this sender."
-      )
+    } message: { action in
+      Text(action.message)
+    }.background {
+      // ⌘⌫ marks the selected conversations OP1 (Trash), after confirming. Ignored while a
+      // text field is being edited.
+      Button("") {
+        guard !(NSApp.keyWindow?.firstResponder is NSText) else { return }
+        markConversations(chosen, level: 1, confirm: true)
+      }.keyboardShortcut(.delete, modifiers: .command).opacity(0).frame(width: 0, height: 0)
+        .accessibilityHidden(true)
     }.sheet(isPresented: $newConversation) {
       ComposeSheet(
         mode: mode,
@@ -94,12 +142,12 @@ struct CommsView: View {
       ScrollView {
         LazyVStack(spacing: 0) {
           ForEach(Array(people.enumerated()), id: \.element.id) { index, item in
-            let isSelected = model.selectedIdentity == item.identity
+            let isSelected = selection.contains(item.identity)
             if groupByLevel, index == 0 || level(of: people[index - 1]) != level(of: item) {
               levelHeader(level(of: item))
             }
             Button {
-              model.selectedIdentity = item.identity
+              click(item)
             } label: {
               HStack(spacing: 18) {
                 Avatar(name: item.name, size: 68)
@@ -132,9 +180,13 @@ struct CommsView: View {
                     isSelected ? Color.accBorder : .clear, lineWidth: 1.2)
                 ).contentShape(Rectangle())
             }.buttonStyle(.plain)
-              .contextMenu { if item.channel == .email { senderMenu(item) } }
+              .contextMenu {
+                // Right-clicking inside a multi-selection acts on all of it.
+                conversationMenu(
+                  isSelected && selection.count > 1 ? chosen : [item])
+              }
             if index < people.count - 1, !isSelected,
-              people[index + 1].identity != model.selectedIdentity
+              !selection.contains(people[index + 1].identity)
             {
               ACCDivider().padding(.horizontal, 10)
             } else {
@@ -176,7 +228,9 @@ struct CommsView: View {
   }
   var conversation: some View {
     ACCPanel(padding: 20) {
-      if let selected {
+      if selection.count > 1 {
+        bulkPanel(chosen)
+      } else if let selected {
         HStack(alignment: .center, spacing: 18) {
           Avatar(name: selected.name, size: 74)
           VStack(alignment: .leading, spacing: 2) {
@@ -265,26 +319,109 @@ struct CommsView: View {
       Spacer()
     }.padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 6)
   }
-  /// Right-click menu on a conversation: a standing level for everything from this sender.
-  @ViewBuilder func senderMenu(_ item: Communication) -> some View {
-    let current = model.policy.senderLevel(item.address)
-    Section("All mail from \(item.address)") {
+  /// Right-click menu for one conversation or a selection: score their messages now, or set a
+  /// standing sender rule for all past and future mail from those addresses.
+  @ViewBuilder func conversationMenu(_ conversations: [Communication]) -> some View {
+    let many = conversations.count > 1
+    Section(many ? "Mark \(conversations.count) conversations" : "Mark this conversation") {
       ForEach(Array((1...5).reversed()), id: \.self) { level in
-        Button {
-          requestRule(item.address, level: level)
-        } label: {
-          if current == level {
-            Label("Always OP\(level) · \(ruleAction(level))", systemImage: "checkmark")
-          } else {
-            Text("Always OP\(level) · \(ruleAction(level))")
-          }
+        Button("OP\(level) · \(ruleAction(level))") {
+          markConversations(conversations, level: level)
         }
       }
     }
-    if current != nil {
-      Divider()
-      Button("Remove sender rule") { Task { await model.setSenderRule(item.address, level: nil) } }
+    if quarantine {
+      Button("Restore to inbox") {
+        model.restore(messages(in: conversations).map(\.id))
+        picked = []
+      }
     }
+    let senders = conversations.filter { $0.channel == .email }.map(\.address)
+    if !senders.isEmpty {
+      let current = Set(senders.map { model.policy.senderLevel($0) })
+      Section(
+        senders.count == 1
+          ? "Always, for all mail from \(senders[0])" : "Always, for all mail from these \(senders.count) senders"
+      ) {
+        ForEach(Array((1...5).reversed()), id: \.self) { level in
+          Button {
+            requestRules(senders, level: level)
+          } label: {
+            if current == [level] {
+              Label("Always OP\(level) · \(ruleAction(level))", systemImage: "checkmark")
+            } else {
+              Text("Always OP\(level) · \(ruleAction(level))")
+            }
+          }
+        }
+      }
+      if senders.contains(where: { model.policy.senderLevel($0) != nil }) {
+        Divider()
+        Button(senders.count == 1 ? "Remove sender rule" : "Remove sender rules") {
+          Task { for address in senders { await model.setSenderRule(address, level: nil) } }
+        }
+      }
+    }
+  }
+  /// Multi-selection pane: the same actions as the right-click menu, as buttons.
+  func bulkPanel(_ conversations: [Communication]) -> some View {
+    let count = messages(in: conversations).count
+    let senders = conversations.filter { $0.channel == .email }.map(\.address)
+    return VStack(alignment: .leading, spacing: 22) {
+      Text("\(conversations.count) CONVERSATIONS SELECTED").font(.lcars(30))
+        .foregroundStyle(Color.accPeach)
+      Text(
+        "\(count) message\(count == 1 ? "" : "s") in \(quarantine ? "quarantine" : "the inbox") · "
+          + conversations.prefix(6).map(\.name).joined(separator: ", ")
+          + (conversations.count > 6 ? " and \(conversations.count - 6) more" : "")
+      ).font(.acc(18)).foregroundStyle(Color.accDim).lineLimit(3)
+      ACCDivider()
+      Text("MARK THESE MESSAGES").font(.lcars(16)).foregroundStyle(Color.accDim)
+      HStack(spacing: 10) {
+        ForEach(Array((1...5).reversed()), id: \.self) { level in
+          Button { markConversations(conversations, level: level) } label: {
+            Text("OP\(level)").font(.lcars(17)).foregroundStyle(Color.op(level))
+              .frame(width: 70, height: 36)
+              .background(Color.accField, in: Capsule())
+              .overlay(Capsule().stroke(Color.op(level), lineWidth: 1.4)).contentShape(Capsule())
+          }.buttonStyle(.plain).help(scoreHelp(level))
+        }
+        Spacer()
+        if quarantine {
+          ACCButton(title: "RESTORE", symbol: "tray.and.arrow.up", kind: .outline, size: 17, height: 40) {
+            model.restore(messages(in: conversations).map(\.id))
+            picked = []
+          }.fixedSize()
+        }
+        Button { markConversations(conversations, level: 1) } label: {
+          Label("DELETE", systemImage: "trash").font(.lcars(17)).foregroundStyle(.black)
+            .padding(.horizontal, 16).frame(height: 40)
+            .background(Color.op(1), in: Capsule()).contentShape(Capsule())
+        }.buttonStyle(.plain).help("Mark OP1 and move to Trash (⌘⌫)")
+      }
+      if !senders.isEmpty {
+        Text("ALWAYS, FOR ALL PAST AND FUTURE MAIL FROM THESE SENDERS").font(.lcars(16))
+          .foregroundStyle(Color.accDim)
+        HStack(spacing: 10) {
+          ForEach(Array((1...5).reversed()), id: \.self) { level in
+            Button { requestRules(senders, level: level) } label: {
+              Label("OP\(level)", systemImage: "pin.fill").font(.lcars(17))
+                .foregroundStyle(Color.op(level)).frame(width: 84, height: 36)
+                .background(Color.accField, in: Capsule())
+                .overlay(Capsule().stroke(Color.op(level), lineWidth: 1.4)).contentShape(Capsule())
+            }.buttonStyle(.plain).help("Sender rule: OP\(level) · \(ruleAction(level))")
+          }
+        }
+      }
+      Spacer()
+      HStack {
+        Text("Shift-click selects a range · ⌘-click adds or removes · right-click for the same actions")
+          .font(.acc(15)).foregroundStyle(Color.accDim)
+        Spacer()
+        Button("CLEAR SELECTION") { picked = [] }.buttonStyle(.plain).font(.lcars(15))
+          .foregroundStyle(Color.accLavender)
+      }
+    }.frame(maxWidth: .infinity, alignment: .leading)
   }
   func ruleAction(_ level: Int) -> String {
     switch PolicyDecision.manual(level: level, policy: model.policy) {
@@ -293,17 +430,48 @@ struct CommsView: View {
     case .delete: "Trash"
     }
   }
-  /// Rules that quarantine or delete existing mail ask first; Keep applies at once.
-  func requestRule(_ address: String, level: Int) {
+  /// Scores every message (in this view) of these conversations. Acting on more than one
+  /// conversation asks first when it would quarantine or delete.
+  func markConversations(_ conversations: [Communication], level: Int, confirm: Bool = false) {
+    let ids = messages(in: conversations).map(\.id)
+    guard !ids.isEmpty else { return }
     let disposition = PolicyDecision.manual(level: level, policy: model.policy)
-    let count = model.senderMessages(address).count
-    if disposition == .keep || count == 0 {
-      Task { await model.setSenderRule(address, level: level) }
-    } else {
-      pendingRule = PendingRule(
-        address: FilterPolicy.normalize(address), level: level, count: count,
-        disposition: disposition)
+    let run: @MainActor () async -> Void = {
+      picked = []
+      await model.applyLevel(ids, level: level)
     }
+    guard conversations.count > 1 || confirm, disposition != .keep else {
+      Task { await run() }
+      return
+    }
+    let verb = disposition == .delete ? "move them to Trash" : "quarantine them"
+    pending = PendingAction(
+      title:
+        "Mark \(ids.count) message\(ids.count == 1 ? "" : "s") from \(conversations.count == 1 ? conversations[0].name : "\(conversations.count) conversations") OP\(level)?",
+      message: "This will \(verb).",
+      button: disposition == .delete ? "Mark OP\(level) and move to Trash" : "Mark OP\(level) and quarantine",
+      destructive: disposition == .delete, run: run)
+  }
+  /// Sender rules that quarantine or delete existing mail ask first; Keep applies at once.
+  func requestRules(_ addresses: [String], level: Int) {
+    let disposition = PolicyDecision.manual(level: level, policy: model.policy)
+    let count = addresses.reduce(0) { $0 + model.senderMessages($1).count }
+    let run: @MainActor () async -> Void = {
+      picked = []
+      for address in addresses { await model.setSenderRule(address, level: level) }
+    }
+    if disposition == .keep || count == 0 {
+      Task { await run() }
+      return
+    }
+    let who = addresses.count == 1 ? FilterPolicy.normalize(addresses[0]) : "\(addresses.count) senders"
+    pending = PendingAction(
+      title: "Mark all mail from \(who) as OP\(level)?",
+      message:
+        "This \(disposition == .delete ? "moves" : "quarantines") the \(count) message\(count == 1 ? "" : "s") already here\(disposition == .delete ? " to Trash" : "") and applies to every future message from \(addresses.count == 1 ? "this sender" : "these senders").",
+      button: disposition == .delete
+        ? "Mark OP\(level) and move \(count) to Trash" : "Mark OP\(level) and quarantine \(count)",
+      destructive: disposition == .delete, run: run)
   }
   /// Always-visible classification controls: the current score and reason, one chip per level
   /// (choosing one applies that level's saved rule), AI re-classify, restore and delete.
@@ -367,7 +535,7 @@ struct CommsView: View {
     case .quarantine: action = "moves it to quarantine"
     case .delete: action = "moves it to Trash"
     }
-    return "OP\(level)\(meaning.isEmpty ? "" : " — \(meaning)") · your rule \(action)"
+    return "OP\(level)\(meaning.isEmpty ? "" : " — \(meaning)") · \(action)"
   }
   func composer(for selected: Communication) -> some View {
     VStack(alignment: .leading, spacing: 12) {

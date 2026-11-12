@@ -35,6 +35,9 @@ import Testing
     #expect(PolicyDecision.manual(level: 3, policy: policy) == .keep)
     #expect(PolicyDecision.manual(level: 5, policy: policy) == .keep)
     #expect(PolicyDecision.manual(level: 0, policy: policy) == .keep)
+    // A hand-set OP1 deletes even when the saved OP1 rule (the default) is Keep.
+    #expect(PolicyDecision.manual(level: 1, policy: FilterPolicy()) == .delete)
+    #expect(PolicyDecision.evaluate(item(level: 1), policy: FilterPolicy()).disposition == .keep)
   }
   @Test func senderRulesNormalizeAddressesAndSurviveOlderPolicyFiles() throws {
     var policy = FilterPolicy()
