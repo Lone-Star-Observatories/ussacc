@@ -24,7 +24,7 @@ SwiftTerm compiles a Metal shader, so the build needs Xcode's separately downloa
 - **Nav:** Apple Maps place search, directions handoff, and editable persistent journey legs for air, taxi, train, boat, road, and walking. Calendar import detects travel candidates by word-boundary keywords and requires review of endpoints/time zones; it does not parse tickets, book travel, or verify flight status. Reviewed legs are preserved when importing again. No live routing/flight reservation service is connected.
 - **Dev:** interactive PTY terminal with multiple persistent sessions and project-folder selection, powered by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm). Sessions start only after New Session/Open Folder. Settings covers general mode, service connections, the spam filter, and notifications.
 
-Switch stations with **⌘1–⌘6**. Open Settings with **⌘,**. The upper-right Demo/Live control separates fictional content from your accounts. Live connections are opt-in. On launch USS ACC reopens the last workspace and reconnects only the sources you previously connected; nothing new is requested.
+USS ACC is a single window; closing it quits the app. Switch stations with **⌘1–⌘6**. Open Settings with **⌘,**. The upper-right Demo/Live control separates fictional content from your accounts. Live connections are opt-in. On launch USS ACC reopens the last workspace and reconnects only the sources you previously connected; nothing new is requested.
 
 ## PSYART
 

@@ -1,12 +1,19 @@
+import AppKit
 import SwiftUI
 
+/// Closing the window quits the app; nothing lingers in the Dock.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
 @main struct USSACCApp: App {
+  @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var model = AppModel()
   @StateObject private var shells = TerminalSessions()
   @StateObject private var psyart = PsyartModel()
   @StateObject private var sdr = SDRController()
   var body: some Scene {
-    WindowGroup("USS ACC · Allen Control Center") {
+    Window("USS ACC · Allen Control Center", id: "main") {
       ControlCenter().environmentObject(model).environmentObject(shells).environmentObject(psyart)
         .environmentObject(sdr).preferredColorScheme(.dark)
         .task {
