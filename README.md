@@ -14,7 +14,7 @@ swift test
 open 'build/USS ACC.app'
 ```
 
-Open `Package.swift` in Xcode for development. Launch the packaged `.app` for Calendar, Automation and notification permissions: its Info.plist includes the privacy descriptions. `scripts/build-app.sh debug` packages a faster development build. The bundle is ad-hoc signed for local use, not notarized for distribution. The terminal requires a non-sandboxed app.
+SwiftTerm compiles a Metal shader, so the build needs Xcode's separately downloaded Metal toolchain. macOS treats it as purgeable and deletes it when the startup disk runs low; `scripts/build-app.sh` reinstalls it automatically, and for `swift test` or Xcode run `xcodebuild -downloadComponent MetalToolchain` if a build fails in `Shaders.metal`. Open `Package.swift` in Xcode for development. Launch the packaged `.app` for Calendar, Automation and notification permissions: its Info.plist includes the privacy descriptions. `scripts/build-app.sh debug` packages a faster development build. The bundle is ad-hoc signed for local use, not notarized for distribution. The terminal requires a non-sandboxed app.
 
 ## Workspaces
 
@@ -55,6 +55,10 @@ The central COMMS filter uses Apple's on-device [Foundation Models](https://deve
 In **Comms**, every email shows its score and a row of **OP1–OP5** chips. Picking a level records a manual correction and applies that level's saved rule immediately, even with automatic filtering off (Quarantine → local quarantine, Delete → Trash, Keep → back to the inbox; OP5 is always kept). **DELETE** records the message as OP1 and moves it to Trash whatever the OP1 rule says. **AI** re-scores with the on-device model without applying a rule. Hover a chip to see its meaning and what your rule will do.
 
 **Sender rules:** right-click a conversation and choose **Always OP1–OP5** to score every message from that exact address — everything already stored and everything that arrives later — at that level, instead of asking the model. Existing mail gets the level's saved rule at once (Keep / Quarantine / Trash; a confirmation shows the count before anything is quarantined or trashed), and new arrivals get it even when automatic filtering is off. A pin marks ruled senders; **Remove sender rule** clears the rule and the scores it set. Rules are stored in `policy.json`. A per-message chip still overrides the rule for that one message, and **AI** shows the model's opinion regardless.
+
+**Selecting several:** Shift-click selects a range of conversations, ⌘-click adds or removes one (Control-click is the macOS right-click). With more than one selected, the right pane shows bulk actions (mark every message OP1–OP5, delete, restore from quarantine, or set sender rules), and right-click on any selected row offers the same. Acting on several conversations, or pressing ⌘⌫, confirms first when it would quarantine or delete.
+
+**OP1 by hand means delete:** marking a message, a selection or a sender OP1 always moves it to Trash so it leaves both the inbox and quarantine views, whatever the OP1 rule in Settings says (that rule still governs automatic scoring). If the server can't move it, it stays visible and the status line says why.
 
 **Sort:** RECENT lists conversations newest first; **OP LEVEL** groups them under OP5 → OP1 → Not scored headers (by sender rule, else the newest message's score), newest first within each level.
 

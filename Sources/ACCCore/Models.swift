@@ -170,10 +170,13 @@ public struct PolicyDecision: Equatable, Sendable {
     let rule = policy.rule(for: score)
     return .init(disposition: rule.disposition, highlight: rule.highlight, notify: rule.push)
   }
-  /// Disposition for a score Allen sets by hand. The saved rule for that level applies whether or
-  /// not automatic filtering is enabled; OP5 is always kept.
+  /// Disposition for a score Allen sets by hand (a message, a selection or a sender rule).
+  /// Marking something OP1 by hand means delete it, whatever the OP1 rule says (that rule still
+  /// governs automatic scoring). Other levels use their saved rule whether or not automatic
+  /// filtering is enabled; OP5 is always kept.
   public static func manual(level: Int, policy: FilterPolicy) -> Disposition {
     guard (1...5).contains(level) else { return .keep }
+    if level == 1 { return .delete }
     return policy.rule(for: level).disposition
   }
 }

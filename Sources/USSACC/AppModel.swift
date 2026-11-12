@@ -767,40 +767,69 @@ enum Station: String, CaseIterable, Identifiable {
     if persist { persistLedger() }
     try? store?.updateState(id: id, classification: .some(value))
   }
-  /// A score set by hand in COMMS. The saved rule for that level is applied straight away, even
-  /// when automatic filtering is off: Quarantine moves it to local quarantine, Delete moves it to
-  /// the account's Trash, Keep returns it to the inbox. OP5 is always kept.
+  /// A score set by hand on one message. See `applyLevel`.
   func correctScore(_ id: String, level: Int) async {
-    guard let index = communications.firstIndex(where: { $0.id == id }) else { return }
-    setManual(index, level: level, reason: "Manual correction by Allen.")
+    await applyLevel([id], level: level, reason: "Manual correction by Allen.")
+  }
+  /// Manual delete: the same as marking the message OP1.
+  func delete(_ id: String) async {
+    await applyLevel([id], level: 1, reason: "Deleted by Allen.")
+  }
+  /// Scores messages by hand and acts on them at once, even with automatic filtering off:
+  /// OP1 moves them to the account's Trash (never expunged) so they leave every view; other
+  /// levels use their saved rule (Quarantine quarantines, Keep returns them to the inbox).
+  /// OP5 is always kept. If Trash fails the messages stay visible and the status says why.
+  func applyLevel(_ ids: [String], level: Int, reason: String = "Manual correction by Allen.") async {
+    let targets = communications.filter { ids.contains($0.id) && !$0.trashed }
+    guard !targets.isEmpty else { return }
+    let focus = selectedIdentity
+    for item in targets {
+      if let index = communications.firstIndex(where: { $0.id == item.id }) {
+        setManual(index, level: level, reason: reason, persist: false)
+      }
+    }
+    persistLedger()
+    let count = targets.count == 1 ? "" : " \(targets.count) messages"
     switch PolicyDecision.manual(level: level, policy: policy) {
     case .keep:
-      if communications[index].quarantined { restore(id) }
+      for item in targets where item.quarantined { restore(item.id) }
+      status = "Marked\(count) OP\(level)"
     case .quarantine:
-      quarantine(id)
-      status = "Marked OP\(level) · moved to quarantine"
+      for item in targets where !item.quarantined { quarantine(item.id, reselecting: false) }
+      status = "Marked\(count) OP\(level) · moved to quarantine"
     case .delete:
-      await moveToTrash(id, label: "Marked OP\(level)")
+      for item in targets where item.isDemo {
+        if let i = communications.firstIndex(where: { $0.id == item.id }) {
+          communications[i].trashed = true
+        }
+      }
+      let live = targets.filter { !$0.isDemo }.map(\.id)
+      let (moved, failures) = await trashBatch(live, token: generation)
+      let gone = moved + targets.count - live.count
+      status =
+        "Marked\(count) OP\(level) · \(gone) moved to Trash"
+        + (failures.isEmpty ? "" : " · kept after errors: \(failures.joined(separator: "; "))")
+    }
+    if let focus, let item = targets.first(where: { $0.identity == focus }) {
+      reselect(after: item.id, inQuarantine: item.quarantined)
     }
   }
-  /// Manual delete. Deleting is a judgement that the message is OP1, so it is recorded as an OP1
-  /// manual correction, then moved to the account's Trash (never expunged).
-  func delete(_ id: String) async {
-    guard let index = communications.firstIndex(where: { $0.id == id }) else { return }
-    setManual(index, level: 1, reason: "Deleted by Allen.")
-    await moveToTrash(id, label: "Deleted")
+  /// Restores quarantined messages to the inbox.
+  func restore(_ ids: [String]) {
+    for id in ids { restore(id) }
+    status = "Restored \(ids.count) message\(ids.count == 1 ? "" : "s") to the inbox"
   }
-  private func setManual(_ index: Int, level: Int, reason: String) {
+  private func setManual(_ index: Int, level: Int, reason: String, persist: Bool = true) {
     let result = Classification(level: level, reason: reason, source: Classification.manualSource)
     communications[index].classification = result
     let id = communications[index].id
     if !communications[index].isDemo {
       ledger.classifications[id] = result
-      persistLedger()
+      if persist { persistLedger() }
       try? store?.updateState(id: id, classification: .some(result))
     }
   }
-  private func quarantine(_ id: String) {
+  private func quarantine(_ id: String, reselecting: Bool = true) {
     guard let index = communications.firstIndex(where: { $0.id == id }) else { return }
     communications[index].quarantined = true
     if !communications[index].isDemo {
@@ -808,21 +837,7 @@ enum Station: String, CaseIterable, Identifiable {
       persistLedger()
       try? store?.updateState(id: id, quarantined: true)
     }
-    reselect(after: id, inQuarantine: false)
-  }
-  private func moveToTrash(_ id: String, label: String) async {
-    guard let item = communications.first(where: { $0.id == id }) else { return }
-    if !item.isDemo {
-      do { try await trash(id) } catch {
-        status = "\(label) · couldn't move to Trash, message kept: \(error.localizedDescription)"
-        return
-      }
-      try? store?.updateState(id: id, trashed: true)
-    }
-    guard let index = communications.firstIndex(where: { $0.id == id }) else { return }
-    communications[index].trashed = true
-    status = "\(label) · moved to Trash"
-    reselect(after: id, inQuarantine: item.quarantined)
+    if reselecting { reselect(after: id, inQuarantine: false) }
   }
   /// Keeps a conversation selected when its last message leaves the view (inbox or quarantine).
   private func reselect(after id: String, inQuarantine: Bool) {

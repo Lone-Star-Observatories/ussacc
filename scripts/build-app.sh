@@ -6,6 +6,15 @@ if [[ "$configuration" != debug && "$configuration" != release ]]; then
   echo 'Usage: scripts/build-app.sh [debug|release]' >&2
   exit 2
 fi
+# SwiftTerm compiles a Metal shader. Since Xcode 26 the Metal toolchain is a separate,
+# purgeable download that macOS deletes when the startup disk runs low; reinstall it if gone.
+if ! xcrun metal --version >/dev/null 2>&1; then
+  echo 'Metal toolchain missing (macOS purges it when disk space is low); downloading…' >&2
+  if ! xcodebuild -downloadComponent MetalToolchain; then
+    echo 'Could not download it. Run: xcodebuild -downloadComponent MetalToolchain' >&2
+    exit 1
+  fi
+fi
 build_args=()
 if [[ -n "${ACC_BUILD_PATH:-}" ]]; then build_args+=(--scratch-path "$ACC_BUILD_PATH"); fi
 if [[ -n "${ACC_BUILD_SYSTEM:-}" ]]; then build_args+=(--build-system "$ACC_BUILD_SYSTEM"); fi
